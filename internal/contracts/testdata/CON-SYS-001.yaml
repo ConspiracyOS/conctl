@@ -1,0 +1,11 @@
+id: CON-SYS-001
+description: Disk free space must remain above threshold
+type: detective
+trigger: schedule
+scope: global
+checks:
+  - name: disk_free_percentage
+    command:
+      run: "result=$(df /srv/con --output=pcent | tail -1 | tr -d ' %'); [ $((100 - result)) -ge 15 ]"
+      exit_code: 0
+    on_fail: halt_agents
