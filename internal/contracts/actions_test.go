@@ -73,7 +73,7 @@ func TestDispatchAction_Quarantine(t *testing.T) {
 	if len(cmds) != 2 {
 		t.Fatalf("cmds = %d, want 2", len(cmds))
 	}
-	if !strings.Contains(cmds[0], "systemctl stop con-badagent") {
+	if !strings.Contains(cmds[0], "systemctl stop conos-badagent") {
 		t.Errorf("first cmd should stop service, got: %s", cmds[0])
 	}
 	if !strings.Contains(cmds[1], "setfacl -b") {

@@ -115,4 +115,5 @@ var validActions = map[string]bool{
 	"kill_session": true,
 	"quarantine":   true,
 	"alert":        true,
+	"escalate":     true, // escalate to sysadmin inbox
 }

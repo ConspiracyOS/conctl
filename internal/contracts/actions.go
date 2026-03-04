@@ -16,7 +16,7 @@ func DispatchAction(ctx context.Context, action FailAction, scope string, execut
 	switch action.Action {
 	case "halt_agents", "halt_workers":
 		// v1: halt_workers = halt_agents (tier differentiation deferred)
-		cmd := "systemctl stop 'con-*.service'"
+		cmd := "systemctl stop 'conos-*.service'"
 		cmds = append(cmds, cmd)
 		if _, _, err := executor.Execute(ctx, cmd); err != nil {
 			return cmds, fmt.Errorf("halt_agents: %w", err)
@@ -38,7 +38,7 @@ func DispatchAction(ctx context.Context, action FailAction, scope string, execut
 		if agent == "" {
 			return nil, fmt.Errorf("quarantine: cannot determine agent from scope %q", scope)
 		}
-		stopCmd := fmt.Sprintf("systemctl stop con-%s.service", agent)
+		stopCmd := fmt.Sprintf("systemctl stop conos-%s.service", agent)
 		aclCmd := fmt.Sprintf("setfacl -b /srv/conos/agents/%s/inbox/", agent)
 		cmds = append(cmds, stopCmd, aclCmd)
 		if _, _, err := executor.Execute(ctx, stopCmd); err != nil {
@@ -50,6 +50,11 @@ func DispatchAction(ctx context.Context, action FailAction, scope string, execut
 
 	case "alert":
 		// No OS action — log only
+
+	case "escalate":
+		if err := Escalate("sysadmin", action.Message); err != nil {
+			return cmds, fmt.Errorf("escalate: %w", err)
+		}
 
 	default:
 		return nil, fmt.Errorf("unknown action: %q", action.Action)
