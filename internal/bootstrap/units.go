@@ -89,8 +89,11 @@ ReadWritePaths=/etc/sudoers.d
 ReadWritePaths=/etc/systemd/system
 `
 	} else if agent.Tier == "worker" {
-		// Workers: strict lockdown, agents dir read-only.
-		// Cannot task other agents — all routing goes through concierge.
+		// Workers: no new privileges, root filesystem write-protected.
+		// ProtectSystem=strict makes /, /usr, /etc read-only for writes —
+		// it does NOT prevent reads. Read access is controlled by POSIX
+		// permissions (e.g. /etc/conos/env is mode 600 root:root).
+		// Workers cannot task other agents — all routing goes through concierge.
 		base += `BindReadOnlyPaths=/srv/conos/agents
 NoNewPrivileges=yes
 ProtectSystem=strict

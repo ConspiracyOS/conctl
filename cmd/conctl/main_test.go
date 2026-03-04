@@ -1,6 +1,8 @@
 package main
 
 import (
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -33,14 +35,14 @@ func TestRunHealthcheck_EmptyDir(t *testing.T) {
 }
 
 func TestHealthcheckIn_EmptyDir(t *testing.T) {
-	err := healthcheckIn(t.TempDir(), filepath.Join(t.TempDir(), "contracts.log"))
+	err := healthcheckIn(t.TempDir(), filepath.Join(t.TempDir(), "contracts.log"), "")
 	if err != nil {
 		t.Errorf("expected nil for empty contracts dir, got: %v", err)
 	}
 }
 
 func TestHealthcheckIn_BadDir(t *testing.T) {
-	err := healthcheckIn("/nonexistent-xyz/contracts", "/dev/null")
+	err := healthcheckIn("/nonexistent-xyz/contracts", "/dev/null", "")
 	if err == nil {
 		t.Error("expected error for nonexistent contracts dir")
 	}
@@ -67,7 +69,7 @@ checks:
     on_fail: alert
 `), 0644)
 
-	err := healthcheckIn(contractsDir, logPath)
+	err := healthcheckIn(contractsDir, logPath, "")
 	if err != nil {
 		t.Errorf("expected nil for passing contract, got: %v", err)
 	}
@@ -95,7 +97,7 @@ checks:
     on_fail: alert
 `), 0644)
 
-	err := healthcheckIn(contractsDir, logPath)
+	err := healthcheckIn(contractsDir, logPath, "")
 	if err == nil {
 		t.Fatal("expected error for failing contract")
 	}
@@ -105,7 +107,7 @@ checks:
 }
 
 func TestShowLogs_NoLogs(t *testing.T) {
-	showLogsFrom(t.TempDir())
+	showLogsFrom(t.TempDir(), &logOpts{n: 20})
 }
 
 func TestShowLogsFrom_TodayLog(t *testing.T) {
@@ -119,7 +121,7 @@ func TestShowLogsFrom_TodayLog(t *testing.T) {
 	}
 	os.WriteFile(filepath.Join(auditDir, today+".log"), []byte(strings.Join(lines, "\n")), 0644)
 
-	showLogsFrom(auditDir)
+	showLogsFrom(auditDir, &logOpts{n: 20})
 }
 
 func TestShowLogsFrom_ContractsLogFallback(t *testing.T) {
@@ -127,7 +129,70 @@ func TestShowLogsFrom_ContractsLogFallback(t *testing.T) {
 	// No today.log, but contracts.log exists — should print it
 	os.WriteFile(filepath.Join(auditDir, "contracts.log"), []byte("contract log line\n"), 0644)
 	// No panic or error expected
-	showLogsFrom(auditDir)
+	showLogsFrom(auditDir, &logOpts{n: 20})
+}
+
+func TestShowLogsFrom_LastN(t *testing.T) {
+	dir := t.TempDir()
+	today := time.Now().Format("2006-01-02")
+	logFile := filepath.Join(dir, today+".log")
+	lines := make([]string, 30)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("line-%02d", i)
+	}
+	if err := os.WriteFile(logFile, []byte(strings.Join(lines, "\n")+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Redirect stdout
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	showLogsFrom(dir, &logOpts{n: 5, follow: false, agent: ""})
+
+	w.Close()
+	os.Stdout = old
+	var buf strings.Builder
+	io.Copy(&buf, r)
+	out := buf.String()
+
+	if !strings.Contains(out, "line-29") {
+		t.Errorf("expected last line (line-29), got: %s", out)
+	}
+	if strings.Contains(out, "line-00") {
+		t.Errorf("should not contain early lines (line-00), got: %s", out)
+	}
+}
+
+func TestDropTaskToAgent(t *testing.T) {
+	dir := t.TempDir()
+	agentInbox := filepath.Join(dir, "agents", "researcher", "inbox")
+	if err := os.MkdirAll(agentInbox, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := dropTaskToAgent(filepath.Join(dir, "agents"), "researcher", "do research"); err != nil {
+		t.Fatal(err)
+	}
+	files, err := os.ReadDir(agentInbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("expected 1 task file, got %d", len(files))
+	}
+	data, _ := os.ReadFile(filepath.Join(agentInbox, files[0].Name()))
+	if string(data) != "do research" {
+		t.Fatalf("unexpected task content: %q", string(data))
+	}
+}
+
+func TestKillAgent_NoUnits(t *testing.T) {
+	// killAgentUnits calls systemctl stop — expected to fail in test env (no systemd)
+	// Just verify it doesn't panic.
+	err := killAgentUnits("nonexistent-agent")
+	_ = err // error expected in test env
 }
 
 func TestDropTaskTo_Success(t *testing.T) {

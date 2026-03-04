@@ -27,6 +27,7 @@ func (e *Exec) Invoke(ctx context.Context, prompt, sessionKey string) (string, e
 	cmd := exec.CommandContext(ctx, e.Cmd, e.Args...)
 	cmd.Stdin = strings.NewReader(prompt)
 	cmd.Dir = e.Workspace
+	cmd.Env = SanitizedEnv()
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	var stdout, stderr bytes.Buffer

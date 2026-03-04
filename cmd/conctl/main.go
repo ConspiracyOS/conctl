@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"os"
 	"os/exec"
@@ -16,19 +17,26 @@ import (
 	"github.com/ConspiracyOS/conctl/internal/runner"
 )
 
+type logOpts struct {
+	n      int
+	follow bool
+	agent  string
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		fmt.Fprintln(os.Stderr, "usage: conctl <command> [args]")
 		fmt.Fprintln(os.Stderr, "")
 		fmt.Fprintln(os.Stderr, "Commands:")
-		fmt.Fprintln(os.Stderr, "  bootstrap      Provision the conspiracy")
-		fmt.Fprintln(os.Stderr, "  run <agent>     Run an agent task cycle")
-		fmt.Fprintln(os.Stderr, "  route-inbox     Move outer inbox to concierge")
-		fmt.Fprintln(os.Stderr, "  healthcheck     Evaluate contracts")
-		fmt.Fprintln(os.Stderr, "  task <message>  Drop a task into the outer inbox")
-		fmt.Fprintln(os.Stderr, "  status          Show agent status")
-		fmt.Fprintln(os.Stderr, "  logs            Show recent audit log entries")
-		fmt.Fprintln(os.Stderr, "  responses       Show recent agent responses")
+		fmt.Fprintln(os.Stderr, "  bootstrap                         Provision the conspiracy")
+		fmt.Fprintln(os.Stderr, "  run <agent>                       Run an agent task cycle")
+		fmt.Fprintln(os.Stderr, "  route-inbox                       Move outer inbox to concierge")
+		fmt.Fprintln(os.Stderr, "  healthcheck                       Evaluate contracts")
+		fmt.Fprintln(os.Stderr, "  task [--agent <name>] <message>   Drop task into inbox")
+		fmt.Fprintln(os.Stderr, "  status                            Show agent status")
+		fmt.Fprintln(os.Stderr, "  logs [-f] [-n N] [agent]          Show/stream audit log")
+		fmt.Fprintln(os.Stderr, "  responses                         Show recent agent responses")
+		fmt.Fprintln(os.Stderr, "  kill <agent>                      Stop a running agent's systemd units")
 		os.Exit(1)
 	}
 
@@ -46,17 +54,37 @@ func main() {
 	case "healthcheck":
 		runHealthcheck()
 	case "task":
-		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "usage: conctl task <message>")
+		fs := flag.NewFlagSet("task", flag.ExitOnError)
+		agentName := fs.String("agent", "", "send directly to this agent's inbox")
+		fs.Parse(os.Args[2:])
+		if fs.NArg() < 1 {
+			fmt.Fprintln(os.Stderr, "usage: conctl task [--agent <name>] <message>")
 			os.Exit(1)
 		}
-		dropTask(os.Args[2])
+		message := fs.Arg(0)
+		if *agentName != "" {
+			if err := dropTaskToAgent("/srv/conos/agents", *agentName, message); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+		} else {
+			dropTask(message)
+		}
 	case "status":
 		showStatus()
 	case "logs":
-		showLogs()
+		opts := parseLogOpts(os.Args[2:])
+		showLogsWithOpts(opts)
 	case "responses":
 		showResponses()
+	case "kill":
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "usage: conctl kill <agent-name>")
+			os.Exit(1)
+		}
+		if err := killAgentUnits(os.Args[2]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+		}
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", os.Args[1])
 		os.Exit(1)
@@ -188,13 +216,23 @@ func runHealthcheck() {
 		contractsDir = env
 	}
 	logPath := "/srv/conos/logs/audit/contracts.log"
-	if err := healthcheckIn(contractsDir, logPath); err != nil {
+
+	var briefOutput string
+	if cfgPath := os.Getenv("CONOS_CONFIG"); cfgPath != "" {
+		if cfg, err := config.Parse(cfgPath); err == nil {
+			briefOutput = cfg.Contracts.BriefOutput
+		}
+	} else if cfg, err := config.Parse("/etc/conos/conos.toml"); err == nil {
+		briefOutput = cfg.Contracts.BriefOutput
+	}
+
+	if err := healthcheckIn(contractsDir, logPath, briefOutput); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
 
-func healthcheckIn(contractsDir, logPath string) error {
+func healthcheckIn(contractsDir, logPath, briefOutput string) error {
 	allContracts, err := contracts.LoadDir(contractsDir)
 	if err != nil {
 		return fmt.Errorf("healthcheck: loading contracts: %w", err)
@@ -239,6 +277,13 @@ func healthcheckIn(contractsDir, logPath string) error {
 		}
 	}
 
+	// Write system-state.md for operator agents (configurable via contracts.brief_output)
+	if briefOutput != "" {
+		if err := writeBriefOutput(briefOutput, result); err != nil {
+			fmt.Fprintf(os.Stderr, "healthcheck: writing brief output: %v\n", err)
+		}
+	}
+
 	// Meta-escalation: if any contracts failed, send one summary task to sysadmin
 	if result.Failed > 0 {
 		var failures []string
@@ -254,6 +299,40 @@ func healthcheckIn(contractsDir, logPath string) error {
 		return fmt.Errorf("healthcheck: %d contract(s) failed", result.Failed)
 	}
 	return nil
+}
+
+// writeBriefOutput writes a markdown system-state summary to path.
+// This file is injected into operator-tier agent prompts as ambient context.
+func writeBriefOutput(path string, result contracts.RunResult) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+
+	var b strings.Builder
+	b.WriteString("# System State\n\n")
+	b.WriteString(fmt.Sprintf("_Updated: %s_\n\n", result.Timestamp.UTC().Format(time.RFC3339)))
+
+	if result.Failed == 0 {
+		b.WriteString(fmt.Sprintf("All %d checks passed.\n", result.Passed))
+	} else {
+		b.WriteString(fmt.Sprintf("Checked %d contracts. **%d failed**, %d passed.\n\n",
+			result.Passed+result.Failed, result.Failed, result.Passed))
+		b.WriteString("## Failed Checks\n\n")
+		for _, cr := range result.Results {
+			if cr.Passed {
+				continue
+			}
+			b.WriteString(fmt.Sprintf("### %s: %s\n\n", cr.ContractID, cr.CheckName))
+			if cr.Output != "" {
+				b.WriteString(fmt.Sprintf("**Output:** %s\n\n", cr.Output))
+			}
+			if cr.Error != nil {
+				b.WriteString(fmt.Sprintf("**Error:** %v\n\n", cr.Error))
+			}
+		}
+	}
+
+	return os.WriteFile(path, []byte(b.String()), 0644)
 }
 
 func runAgent(name string) {
@@ -338,16 +417,38 @@ func showStatusIn(agentsDir string) error {
 	return nil
 }
 
-func showLogs() {
-	showLogsFrom("/srv/conos/logs/audit")
+func parseLogOpts(args []string) *logOpts {
+	fs := flag.NewFlagSet("logs", flag.ExitOnError)
+	follow := fs.Bool("f", false, "follow the log (stream)")
+	n := fs.Int("n", 20, "number of lines to show")
+	fs.Parse(args)
+	agent := ""
+	if fs.NArg() > 0 {
+		agent = fs.Arg(0)
+	}
+	return &logOpts{n: *n, follow: *follow, agent: agent}
 }
 
-func showLogsFrom(auditDir string) {
+func showLogsWithOpts(opts *logOpts) {
+	showLogsFrom("/srv/conos/logs/audit", opts)
+}
+
+func showLogsFrom(auditDir string, opts *logOpts) {
 	today := time.Now().Format("2006-01-02")
 	logPath := filepath.Join(auditDir, today+".log")
 
+	if opts.follow {
+		// Use tail -f — simplest correct approach
+		cmd := exec.Command("tail", "-f", "-n", fmt.Sprintf("%d", opts.n), logPath)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		cmd.Run()
+		return
+	}
+
 	data, err := os.ReadFile(logPath)
 	if err != nil {
+		// Fallback to contracts.log (preserve existing behavior)
 		data, err = os.ReadFile(filepath.Join(auditDir, "contracts.log"))
 		if err != nil {
 			fmt.Println("No audit logs found for today")
@@ -356,13 +457,46 @@ func showLogsFrom(auditDir string) {
 	}
 
 	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+
+	if opts.agent != "" {
+		var matched []string
+		for _, line := range lines {
+			if strings.Contains(line, "["+opts.agent+"]") || strings.Contains(line, " "+opts.agent+" ") {
+				matched = append(matched, line)
+			}
+		}
+		lines = matched
+	}
+
 	start := 0
-	if len(lines) > 20 {
-		start = len(lines) - 20
+	if len(lines) > opts.n {
+		start = len(lines) - opts.n
 	}
-	for _, line := range lines[start:] {
-		fmt.Println(line)
+	for _, l := range lines[start:] {
+		fmt.Println(l)
 	}
+}
+
+func dropTaskToAgent(agentsDir, agentName, message string) error {
+	inbox := filepath.Join(agentsDir, agentName, "inbox")
+	if _, err := os.Stat(inbox); err != nil {
+		return fmt.Errorf("agent %q not found (no inbox at %s)", agentName, inbox)
+	}
+	taskID := fmt.Sprintf("%d", time.Now().Unix())
+	taskPath := filepath.Join(inbox, taskID+".task")
+	return os.WriteFile(taskPath, []byte(message), 0644)
+}
+
+func killAgentUnits(name string) error {
+	var lastErr error
+	for _, suffix := range []string{".path", ".service", ".timer"} {
+		unit := "conos-" + name + suffix
+		if err := exec.Command("systemctl", "stop", unit).Run(); err != nil {
+			lastErr = err // unit may not exist; continue
+		}
+	}
+	fmt.Printf("killed %s\n", name)
+	return lastErr
 }
 
 func showResponses() {

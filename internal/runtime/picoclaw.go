@@ -21,6 +21,10 @@ type PicoClaw struct {
 
 func (p *PicoClaw) Invoke(ctx context.Context, prompt, sessionKey string) (string, error) {
 	cfg := BuildPicoConfig(p.Agent, p.Workspace)
+	// Remove secret env vars now that API keys are captured in cfg.
+	// Tool subprocesses spawned by PicoClaw inherit the process environment;
+	// clearing here prevents secrets from reaching the model via tool output.
+	ClearSecretEnv(p.Agent.APIKeyEnv)
 
 	provider, err := providers.CreateProvider(cfg)
 	if err != nil {

@@ -52,7 +52,8 @@ type NetworkConfig struct {
 }
 
 type ContractsConfig struct {
-	System SystemContracts `toml:"system"`
+	System      SystemContracts `toml:"system"`
+	BriefOutput string          `toml:"brief_output"` // path to write system-state.md after healthcheck (empty = disabled)
 }
 
 type SystemContracts struct {
