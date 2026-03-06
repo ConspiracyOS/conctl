@@ -2,17 +2,22 @@ package config
 
 // Config is the top-level ConspiracyOS configuration.
 type Config struct {
-	System    SystemConfig    `toml:"system"`
-	Infra     InfraConfig     `toml:"infra"`
-	Base      BaseConfig      `toml:"base"`
-	Network   NetworkConfig   `toml:"network"`
-	Contracts ContractsConfig `toml:"contracts"`
-	Dashboard DashboardConfig `toml:"dashboard"`
-	Agents    []AgentConfig   `toml:"agents"`
+	System     SystemConfig     `toml:"system"`
+	Deployment DeploymentConfig `toml:"deployment"`
+	Infra      InfraConfig      `toml:"infra"`
+	Base       BaseConfig       `toml:"base"`
+	Network    NetworkConfig    `toml:"network"`
+	Contracts  ContractsConfig  `toml:"contracts"`
+	Dashboard  DashboardConfig  `toml:"dashboard"`
+	Agents     []AgentConfig    `toml:"agents"`
 }
 
 type SystemConfig struct {
 	Name string `toml:"name"`
+}
+
+type DeploymentConfig struct {
+	Mode string `toml:"mode"` // local_trusted | authenticated
 }
 
 type InfraConfig struct {
@@ -52,8 +57,10 @@ type NetworkConfig struct {
 }
 
 type ContractsConfig struct {
-	System      SystemContracts `toml:"system"`
-	BriefOutput string          `toml:"brief_output"` // path to write system-state.md after healthcheck (empty = disabled)
+	System                 SystemContracts `toml:"system"`
+	BriefOutput            string          `toml:"brief_output"`               // path to write system-state.md after healthcheck (empty = disabled)
+	DailyBudgetUSD         float64         `toml:"daily_budget_usd"`           // 0 disables budget enforcement
+	EstimatedCostPerRunUSD float64         `toml:"estimated_cost_per_run_usd"` // simple fallback cost model when provider metrics are unavailable
 }
 
 type SystemContracts struct {
@@ -110,6 +117,15 @@ func (c *Config) ResolvedAgent(name string) AgentConfig {
 			}
 			if resolved.APIKeyEnv == "" {
 				resolved.APIKeyEnv = firstNonEmpty(tier.APIKeyEnv, c.Base.APIKeyEnv)
+			}
+
+			// Claude Code OAuth tokens only work with the Claude Code CLI.
+			// Force the runner so PicoClaw doesn't try to use an OAuth token as an API key.
+			if resolved.APIKeyEnv == "CLAUDE_CODE_OAUTH_TOKEN" && (resolved.Runner == "" || resolved.Runner == "picoclaw") {
+				resolved.Runner = "claude-code"
+				if len(resolved.RunnerArgs) == 0 {
+					resolved.RunnerArgs = []string{"--print"}
+				}
 			}
 
 			// Global defaults (fallbacks when nothing is configured)

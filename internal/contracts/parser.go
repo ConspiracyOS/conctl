@@ -54,18 +54,24 @@ func validate(c Contract) error {
 	if c.ID == "" {
 		return fmt.Errorf("contract missing id")
 	}
-	if c.Type != "detective" && c.Type != "preventive" {
-		return fmt.Errorf("contract %s: type must be 'detective' or 'preventive', got %q", c.ID, c.Type)
+	if c.Type != "detective" && c.Type != "preventive" && c.Type != "task" && c.Type != "meta" {
+		return fmt.Errorf("contract %s: type must be 'detective', 'preventive', 'task', or 'meta', got %q", c.ID, c.Type)
+	}
+	if c.Class != "" && c.Class != "invariant" && c.Class != "task" && c.Class != "meta" {
+		return fmt.Errorf("contract %s: class must be invariant/task/meta, got %q", c.ID, c.Class)
 	}
 
 	// Preventive contracts are registry-only, no checks needed
 	if c.Type == "preventive" {
 		return nil
 	}
+	if c.Type == "meta" && len(c.Checks) == 0 {
+		return nil
+	}
 
-	// Detective contracts must have at least one check
+	// Detective/task contracts must have at least one check
 	if len(c.Checks) == 0 {
-		return fmt.Errorf("contract %s: detective contract must have at least one check", c.ID)
+		return fmt.Errorf("contract %s: %s contract must have at least one check", c.ID, c.Type)
 	}
 
 	for i, ch := range c.Checks {

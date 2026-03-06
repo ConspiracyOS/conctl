@@ -82,6 +82,9 @@ func applyDefaults(cfg *Config) {
 	if cfg.System.Name == "" {
 		cfg.System.Name = "conspiracy"
 	}
+	if cfg.Deployment.Mode == "" {
+		cfg.Deployment.Mode = "local_trusted"
+	}
 	if cfg.Network.OutboundFilter == "" {
 		cfg.Network.OutboundFilter = "strict"
 	}
@@ -117,6 +120,14 @@ func applyDefaults(cfg *Config) {
 }
 
 func validate(cfg *Config) error {
+	validDeploymentModes := map[string]bool{"local_trusted": true, "authenticated": true}
+	if !validDeploymentModes[cfg.Deployment.Mode] {
+		return fmt.Errorf("deployment.mode: invalid value %q (must be local_trusted/authenticated)", cfg.Deployment.Mode)
+	}
+	if cfg.Deployment.Mode == "local_trusted" && cfg.Dashboard.Enabled && cfg.Dashboard.Bind != "127.0.0.1" && cfg.Dashboard.Bind != "localhost" {
+		return fmt.Errorf("deployment.mode local_trusted requires dashboard.bind to be localhost/127.0.0.1")
+	}
+
 	validTiers := map[string]bool{"officer": true, "operator": true, "worker": true}
 	validModes := map[string]bool{"on-demand": true, "continuous": true, "cron": true}
 

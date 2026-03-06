@@ -277,6 +277,64 @@ func TestParseInvalidTOML(t *testing.T) {
 	}
 }
 
+func TestParseDeploymentDefault(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "conos.toml")
+	os.WriteFile(path, []byte(`
+[[agents]]
+name = "a"
+tier = "worker"
+`), 0644)
+
+	cfg, err := Parse(path)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	if cfg.Deployment.Mode != "local_trusted" {
+		t.Fatalf("deployment mode = %q, want local_trusted", cfg.Deployment.Mode)
+	}
+}
+
+func TestParseDeploymentInvalidMode(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "conos.toml")
+	os.WriteFile(path, []byte(`
+[deployment]
+mode = "internet"
+
+[[agents]]
+name = "a"
+tier = "worker"
+`), 0644)
+
+	_, err := Parse(path)
+	if err == nil {
+		t.Fatal("expected deployment mode validation error")
+	}
+}
+
+func TestParseDeploymentLocalTrustedBindGuard(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "conos.toml")
+	os.WriteFile(path, []byte(`
+[deployment]
+mode = "local_trusted"
+
+[dashboard]
+enabled = true
+bind = "0.0.0.0"
+
+[[agents]]
+name = "a"
+tier = "worker"
+`), 0644)
+
+	_, err := Parse(path)
+	if err == nil {
+		t.Fatal("expected dashboard bind guard error")
+	}
+}
+
 func TestMigrateLegacyDefaults_OfficerAndWorker(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "conos.toml")
@@ -489,5 +547,54 @@ tier = "operator"
 	}
 	if agent.MaxSessions != 1 {
 		t.Errorf("expected default max_sessions 1, got %d", agent.MaxSessions)
+	}
+}
+
+func TestResolvedAgent_OAuthForcesClaudeCode(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "conos.toml")
+	os.WriteFile(path, []byte(`
+[[agents]]
+name = "officer"
+tier = "officer"
+api_key_env = "CLAUDE_CODE_OAUTH_TOKEN"
+`), 0644)
+
+	cfg, err := Parse(path)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	agent := cfg.ResolvedAgent("officer")
+	if agent.Runner != "claude-code" {
+		t.Errorf("expected runner forced to claude-code, got %q", agent.Runner)
+	}
+	if len(agent.RunnerArgs) == 0 || agent.RunnerArgs[0] != "--print" {
+		t.Errorf("expected default runner_args [--print], got %v", agent.RunnerArgs)
+	}
+}
+
+func TestResolvedAgent_OAuthPreservesExplicitArgs(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "conos.toml")
+	os.WriteFile(path, []byte(`
+[[agents]]
+name = "officer"
+tier = "officer"
+api_key_env = "CLAUDE_CODE_OAUTH_TOKEN"
+runner_args = ["--model", "claude-opus-4-6", "--print"]
+`), 0644)
+
+	cfg, err := Parse(path)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	agent := cfg.ResolvedAgent("officer")
+	if agent.Runner != "claude-code" {
+		t.Errorf("expected runner forced to claude-code, got %q", agent.Runner)
+	}
+	if len(agent.RunnerArgs) != 3 {
+		t.Errorf("expected explicit runner_args preserved, got %v", agent.RunnerArgs)
 	}
 }

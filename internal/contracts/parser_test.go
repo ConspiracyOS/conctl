@@ -155,6 +155,48 @@ scope: system
 	}
 }
 
+func TestLoadFile_MetaContractAllowsNoChecks(t *testing.T) {
+	yaml := `id: CON-META-001
+description: Meta contract
+type: meta
+scope: global
+`
+	dir := t.TempDir()
+	path := writeTemp(t, dir, "meta.yaml", yaml)
+
+	c, err := LoadFile(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if c.Type != "meta" {
+		t.Fatalf("type = %q, want meta", c.Type)
+	}
+}
+
+func TestLoadFile_TaskContract(t *testing.T) {
+	yaml := `id: CON-TASK-001
+description: Task contract
+type: task
+scope: global
+checks:
+  - name: done_when_file_exists
+    command:
+      run: "test -f /tmp/done.flag"
+      exit_code: 0
+    on_fail: fail
+`
+	dir := t.TempDir()
+	path := writeTemp(t, dir, "task.yaml", yaml)
+
+	c, err := LoadFile(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if c.Type != "task" {
+		t.Fatalf("type = %q, want task", c.Type)
+	}
+}
+
 func TestLoadFile_ValidationError_NoCommandOrScript(t *testing.T) {
 	yaml := `id: CON-BAD2
 description: check without command or script

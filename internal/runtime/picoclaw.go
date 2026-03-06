@@ -17,24 +17,42 @@ import (
 type PicoClaw struct {
 	Agent     conconfig.AgentConfig
 	Workspace string
+	// cfg is built once on the first Invoke call. API key env vars are
+	// captured into cfg and then cleared from the process environment so
+	// tool subprocesses cannot inherit them. Caching cfg here ensures the
+	// key survives across multiple Invoke calls (e.g. in runAgentLoop).
+	cfg *pcconfig.Config
 }
 
 func (p *PicoClaw) Invoke(ctx context.Context, prompt, sessionKey string) (string, error) {
-	cfg := BuildPicoConfig(p.Agent, p.Workspace)
-	// Remove secret env vars now that API keys are captured in cfg.
-	// Tool subprocesses spawned by PicoClaw inherit the process environment;
-	// clearing here prevents secrets from reaching the model via tool output.
-	ClearSecretEnv(p.Agent.APIKeyEnv)
+	if p.cfg == nil {
+		p.cfg = BuildPicoConfig(p.Agent, p.Workspace)
+		// Remove secret env vars now that API keys are captured in cfg.
+		// Tool subprocesses spawned by PicoClaw inherit the process environment;
+		// clearing here prevents secrets from reaching the model via tool output.
+		ClearSecretEnv(p.Agent.APIKeyEnv)
+	}
 
-	provider, err := providers.CreateProvider(cfg)
-	if err != nil {
-		return "", fmt.Errorf("creating LLM provider: %w", err)
+	// When the Anthropic provider is configured with a key (or OAuth token),
+	// use NewClaudeProvider directly — it sends Authorization: Bearer <token>
+	// via the Anthropic SDK, which supports both API keys and OAuth tokens.
+	// CreateProvider routes anthropic+apiKey through the OpenAI-compatible HTTP
+	// provider, which uses the wrong endpoint format for native Anthropic API.
+	var provider providers.LLMProvider
+	if p.cfg.Providers.Anthropic.APIKey != "" {
+		provider = providers.NewClaudeProvider(p.cfg.Providers.Anthropic.APIKey)
+	} else {
+		var err error
+		provider, err = providers.CreateProvider(p.cfg)
+		if err != nil {
+			return "", fmt.Errorf("creating LLM provider: %w", err)
+		}
 	}
 
 	msgBus := bus.NewMessageBus()
 	defer msgBus.Close()
 
-	loop := pcagent.NewAgentLoop(cfg, msgBus, provider)
+	loop := pcagent.NewAgentLoop(p.cfg, msgBus, provider)
 
 	return loop.ProcessDirect(ctx, prompt, sessionKey)
 }
@@ -44,7 +62,7 @@ func (p *PicoClaw) Invoke(ctx context.Context, prompt, sessionKey string) (strin
 func BuildPicoConfig(agent conconfig.AgentConfig, workspace string) *pcconfig.Config {
 	model := agent.Model
 	if model == "" {
-		model = "anthropic/claude-sonnet-4.6"
+		model = "claude-sonnet-4-6"
 	}
 
 	cfg := pcconfig.DefaultConfig()

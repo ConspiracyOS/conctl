@@ -40,7 +40,7 @@ func TestBuildPicoConfig(t *testing.T) {
 func TestBuildPicoConfigDefaultModel(t *testing.T) {
 	agent := config.AgentConfig{Name: "sysadmin"}
 	pcfg := BuildPicoConfig(agent, "")
-	if pcfg.Agents.Defaults.Model != "anthropic/claude-sonnet-4.6" {
+	if pcfg.Agents.Defaults.Model != "claude-sonnet-4-6" {
 		t.Errorf("expected default model, got %q", pcfg.Agents.Defaults.Model)
 	}
 }

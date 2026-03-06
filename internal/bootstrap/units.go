@@ -84,7 +84,7 @@ UMask=0077
 ReadWritePaths=/srv/conos/config
 ReadWritePaths=/srv/conos/contracts
 ReadWritePaths=/srv/conos/logs
-ReadWritePaths=/etc/con
+ReadWritePaths=/etc/conos
 ReadWritePaths=/etc/sudoers.d
 ReadWritePaths=/etc/systemd/system
 `

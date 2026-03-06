@@ -16,6 +16,7 @@ import (
 
 	"github.com/ConspiracyOS/conctl/internal/assembler"
 	"github.com/ConspiracyOS/conctl/internal/config"
+	"github.com/ConspiracyOS/conctl/internal/contracts"
 	conruntime "github.com/ConspiracyOS/conctl/internal/runtime"
 )
 
@@ -239,7 +240,22 @@ func ReadSkills(skillsDir string) string {
 }
 
 // Run executes a single agent run: assemble context, pick task, invoke runtime, route output.
+// A fresh runtime is created for each call. For multi-task loops, prefer RunWithRuntime
+// to reuse a single runtime instance across calls (preserving cached API keys).
 func Run(agentName string, cfg *config.Config, dirs Dirs) error {
+	agent := cfg.ResolvedAgent(agentName)
+	if agent.Name == "" {
+		return fmt.Errorf("agent %q not found in config", agentName)
+	}
+	workspaceDir := filepath.Join(dirs.StateBase, "agents", agentName, "workspace")
+	rt := conruntime.New(agent, workspaceDir)
+	return RunWithRuntime(agentName, cfg, dirs, rt)
+}
+
+// RunWithRuntime executes a single agent run using the provided runtime.
+// Pass a long-lived runtime instance when processing multiple tasks for the same
+// agent so that cached state (e.g. API key captured on first Invoke) is preserved.
+func RunWithRuntime(agentName string, cfg *config.Config, dirs Dirs, rt conruntime.Runtime) error {
 	agent := cfg.ResolvedAgent(agentName)
 	if agent.Name == "" {
 		return fmt.Errorf("agent %q not found in config", agentName)
@@ -283,8 +299,6 @@ func Run(agentName string, cfg *config.Config, dirs Dirs) error {
 	// 4. Invoke runtime
 	sessionKey := fmt.Sprintf("conos:%s", agentName)
 	ctx := context.Background()
-	workspaceDir := filepath.Join(agentDir, "workspace")
-	rt := conruntime.New(agent, workspaceDir)
 	output, err := rt.Invoke(ctx, prompt, sessionKey)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "agent runtime error: %v\n", err)
@@ -311,6 +325,26 @@ func Run(agentName string, cfg *config.Config, dirs Dirs) error {
 	if err == nil {
 		f.WriteString(auditLine)
 		f.Close()
+	}
+
+	// Optional budget enforcement (append-only spend ledger).
+	if cfg.Contracts.EstimatedCostPerRunUSD > 0 {
+		spendPath := filepath.Join(dirs.StateBase, "ledger", "spend.jsonl")
+		exceeded, total, berr := contracts.RecordSpendAndCheckBudget(spendPath, contracts.SpendEvent{
+			Timestamp: now,
+			Agent:     agentName,
+			RunID:     sessionKey,
+			Model:     agent.Model,
+			CostUSD:   cfg.Contracts.EstimatedCostPerRunUSD,
+		}, cfg.Contracts.DailyBudgetUSD)
+		if berr != nil {
+			return fmt.Errorf("recording spend: %w", berr)
+		}
+		if exceeded {
+			msg := fmt.Sprintf("Budget exceeded: daily spend %.2f > %.2f USD", total, cfg.Contracts.DailyBudgetUSD)
+			_ = os.WriteFile(filepath.Join(dirs.StateBase, "agents", "sysadmin", "inbox", fmt.Sprintf("%d-budget.task", now.Unix())), []byte(msg), 0644)
+			return fmt.Errorf("%s", msg)
+		}
 	}
 
 	// 7. Route output

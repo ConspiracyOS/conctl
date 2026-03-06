@@ -805,6 +805,44 @@ func TestRun_Success(t *testing.T) {
 	}
 }
 
+func TestRun_BudgetExceeded(t *testing.T) {
+	agentName := "test-runner"
+	stateBase, _, dirs := setupRunDirs(t, agentName)
+	agentDir := filepath.Join(stateBase, "agents", agentName)
+	sysadminInbox := filepath.Join(stateBase, "agents", "sysadmin", "inbox")
+	if err := os.MkdirAll(sysadminInbox, 0755); err != nil {
+		t.Fatalf("mkdir sysadmin inbox: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(agentDir, "inbox", "001.task"), []byte("test task"), 0644); err != nil {
+		t.Fatalf("write task: %v", err)
+	}
+
+	cfg := &config.Config{
+		Contracts: config.ContractsConfig{
+			DailyBudgetUSD:         1.0,
+			EstimatedCostPerRunUSD: 1.5,
+		},
+		Agents: []config.AgentConfig{
+			{Name: agentName, Runner: "cat"},
+		},
+	}
+
+	err := Run(agentName, cfg, dirs)
+	if err == nil {
+		t.Fatal("expected budget exceed error")
+	}
+	if !strings.Contains(err.Error(), "Budget exceeded") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	entries, readErr := os.ReadDir(sysadminInbox)
+	if readErr != nil {
+		t.Fatalf("read sysadmin inbox: %v", readErr)
+	}
+	if len(entries) == 0 {
+		t.Fatal("expected budget escalation task in sysadmin inbox")
+	}
+}
+
 func TestRun_WithSkills(t *testing.T) {
 	// Covers the skillsContent != "" branch in Run.
 	agentName := "test-runner"

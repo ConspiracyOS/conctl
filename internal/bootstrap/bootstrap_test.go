@@ -150,6 +150,25 @@ func TestProvisionTrustedGroup(t *testing.T) {
 	}
 }
 
+func TestProvisionArtifactSigningKey(t *testing.T) {
+	cfg := &config.Config{
+		Agents: []config.AgentConfig{
+			{Name: "concierge", Tier: "operator"},
+		},
+	}
+	cmds := PlanProvision(cfg)
+	found := false
+	for _, c := range cmds {
+		if strings.Contains(c, "/etc/conos/artifact-signing.key") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("PlanProvision should create and lock down artifact signing key")
+	}
+}
+
 func TestProvisionSudoersFromProfile(t *testing.T) {
 	cfg := &config.Config{
 		Agents: []config.AgentConfig{

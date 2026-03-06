@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,10 +14,14 @@ import (
 	"strings"
 	"time"
 
+	sharedcontracts "github.com/ConspiracyOS/contracts/pkg/contracts"
+
+	"github.com/ConspiracyOS/conctl/internal/artifacts"
 	"github.com/ConspiracyOS/conctl/internal/bootstrap"
 	"github.com/ConspiracyOS/conctl/internal/config"
 	"github.com/ConspiracyOS/conctl/internal/contracts"
 	"github.com/ConspiracyOS/conctl/internal/runner"
+	conruntime "github.com/ConspiracyOS/conctl/internal/runtime"
 )
 
 type logOpts struct {
@@ -22,6 +29,13 @@ type logOpts struct {
 	follow bool
 	agent  string
 }
+
+var (
+	artifactCreateRoot = "/srv/conos/artifacts"
+	artifactShowRoot   = "/srv/conos/artifacts"
+	artifactStatusRoot = "/srv/conos/status"
+	taskContractsRoot  = "/srv/conos/policy/task-contracts"
+)
 
 func main() {
 	if len(os.Args) < 2 {
@@ -32,6 +46,10 @@ func main() {
 		fmt.Fprintln(os.Stderr, "  run <agent>                       Run an agent task cycle")
 		fmt.Fprintln(os.Stderr, "  route-inbox                       Move outer inbox to concierge")
 		fmt.Fprintln(os.Stderr, "  healthcheck                       Evaluate contracts")
+		fmt.Fprintln(os.Stderr, "  doctor                            Render system doctor report from contracts")
+		fmt.Fprintln(os.Stderr, "  artifact create|show|link|verify  Manage user-facing artifacts")
+		fmt.Fprintln(os.Stderr, "  artifact-auth                     Start nginx auth_request backend")
+		fmt.Fprintln(os.Stderr, "  task-contract open|claim|update|show  Manage contract-backed tasks")
 		fmt.Fprintln(os.Stderr, "  task [--agent <name>] <message>   Drop task into inbox")
 		fmt.Fprintln(os.Stderr, "  status                            Show agent status")
 		fmt.Fprintln(os.Stderr, "  logs [-f] [-n N] [agent]          Show/stream audit log")
@@ -53,6 +71,14 @@ func main() {
 		routeInbox()
 	case "healthcheck":
 		runHealthcheck()
+	case "doctor":
+		runDoctor()
+	case "artifact":
+		runArtifact(os.Args[2:])
+	case "artifact-auth":
+		runArtifactAuth(os.Args[2:])
+	case "task-contract":
+		runTaskContract(os.Args[2:])
 	case "task":
 		fs := flag.NewFlagSet("task", flag.ExitOnError)
 		agentName := fs.String("agent", "", "send directly to this agent's inbox")
@@ -87,6 +113,280 @@ func main() {
 		}
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", os.Args[1])
+		os.Exit(1)
+	}
+}
+
+func runArtifact(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: conctl artifact <create|show> [args]")
+		os.Exit(1)
+	}
+	switch args[0] {
+	case "create":
+		artifactCreate(args[1:])
+	case "show":
+		artifactShow(args[1:])
+	case "link":
+		artifactLink(args[1:])
+	case "verify":
+		artifactVerify(args[1:])
+	default:
+		fmt.Fprintf(os.Stderr, "unknown artifact command: %s\n", args[0])
+		os.Exit(1)
+	}
+}
+
+func runTaskContract(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: conctl task-contract <open|claim|update|show> [args]")
+		os.Exit(1)
+	}
+	switch args[0] {
+	case "open":
+		taskContractOpen(args[1:])
+	case "claim":
+		taskContractClaim(args[1:])
+	case "update":
+		taskContractUpdate(args[1:])
+	case "show":
+		taskContractShow(args[1:])
+	default:
+		fmt.Fprintf(os.Stderr, "unknown task-contract command: %s\n", args[0])
+		os.Exit(1)
+	}
+}
+
+func taskContractOpen(args []string) {
+	fs := flag.NewFlagSet("task-contract open", flag.ExitOnError)
+	id := fs.String("id", "", "task contract id")
+	title := fs.String("title", "", "title")
+	description := fs.String("description", "", "description")
+	actor := fs.String("actor", os.Getenv("CONOS_ACTOR"), "actor")
+	runID := fs.String("run-id", os.Getenv("CONOS_RUN_ID"), "run id")
+	completionChecks := fs.String("completion-checks", "", "comma-separated contract IDs for auto-completion")
+	fs.Parse(args)
+	var checks []string
+	if *completionChecks != "" {
+		for _, s := range strings.Split(*completionChecks, ",") {
+			s = strings.TrimSpace(s)
+			if s != "" {
+				checks = append(checks, s)
+			}
+		}
+	}
+	task, err := contracts.OpenTaskContract(taskContractsRoot, contracts.TaskContractInput{
+		ID:               *id,
+		Title:            *title,
+		Description:      *description,
+		Actor:            *actor,
+		RunID:            *runID,
+		CompletionChecks: checks,
+	}, time.Now().UTC())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	data, _ := json.MarshalIndent(task, "", "  ")
+	fmt.Println(string(data))
+}
+
+func taskContractClaim(args []string) {
+	fs := flag.NewFlagSet("task-contract claim", flag.ExitOnError)
+	id := fs.String("id", "", "task contract id")
+	owner := fs.String("owner", "", "owner")
+	runID := fs.String("run-id", os.Getenv("CONOS_RUN_ID"), "run id")
+	lease := fs.Duration("lease", 5*time.Minute, "lease duration")
+	fs.Parse(args)
+	claim, err := contracts.ClaimTask(filepath.Join(taskContractsRoot, ".claims.json"), *id, *owner, *runID, *lease, time.Now().UTC())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	task, err := contracts.UpdateTaskContract(taskContractsRoot, *id, "in_progress", *owner, *owner, *runID, "claimed", time.Now().UTC())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	out := map[string]any{"claim": claim, "task": task}
+	data, _ := json.MarshalIndent(out, "", "  ")
+	fmt.Println(string(data))
+}
+
+func taskContractUpdate(args []string) {
+	fs := flag.NewFlagSet("task-contract update", flag.ExitOnError)
+	status := fs.String("status", "", "status")
+	owner := fs.String("owner", "", "owner")
+	actor := fs.String("actor", os.Getenv("CONOS_ACTOR"), "actor")
+	runID := fs.String("run-id", os.Getenv("CONOS_RUN_ID"), "run id")
+	message := fs.String("message", "", "history message")
+	fs.Parse(args)
+	if fs.NArg() != 1 {
+		fmt.Fprintln(os.Stderr, "usage: conctl task-contract update [flags] <id>")
+		os.Exit(1)
+	}
+	task, err := contracts.UpdateTaskContract(taskContractsRoot, fs.Arg(0), *status, *owner, *actor, *runID, *message, time.Now().UTC())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	data, _ := json.MarshalIndent(task, "", "  ")
+	fmt.Println(string(data))
+}
+
+func taskContractShow(args []string) {
+	if len(args) != 1 {
+		fmt.Fprintln(os.Stderr, "usage: conctl task-contract show <id>")
+		os.Exit(1)
+	}
+	task, err := contracts.ShowTaskContract(taskContractsRoot, args[0])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	data, _ := json.MarshalIndent(task, "", "  ")
+	fmt.Println(string(data))
+}
+
+func artifactCreate(args []string) {
+	fs := flag.NewFlagSet("artifact create", flag.ExitOnError)
+	title := fs.String("title", "", "artifact title")
+	kind := fs.String("kind", "file", "artifact kind")
+	contentType := fs.String("content-type", "", "content type")
+	filename := fs.String("name", "", "file name")
+	fromPath := fs.String("from", "", "read artifact content from file")
+	createdBy := fs.String("created-by", os.Getenv("CONOS_ACTOR"), "artifact creator")
+	runID := fs.String("run-id", os.Getenv("CONOS_RUN_ID"), "run identifier")
+	taskID := fs.String("task-id", "", "task identifier")
+	audience := fs.String("audience", "user", "artifact audience")
+	exposure := fs.String("exposure", string(artifacts.ExposureDashboardLocal), "private|dashboard_local|authenticated_dashboard")
+	fs.Parse(args)
+
+	var content []byte
+	var err error
+	if *fromPath != "" {
+		content, err = os.ReadFile(*fromPath)
+	} else {
+		content, err = io.ReadAll(os.Stdin)
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+
+	artifact, err := artifacts.Create(artifacts.CreateInput{
+		ArtifactsRoot: artifactCreateRoot,
+		StatusRoot:    artifactStatusRoot,
+		Title:         *title,
+		Kind:          *kind,
+		ContentType:   *contentType,
+		Filename:      *filename,
+		CreatedBy:     *createdBy,
+		RunID:         *runID,
+		TaskID:        *taskID,
+		Audience:      *audience,
+		Exposure:      artifacts.Exposure(*exposure),
+		Content:       content,
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	data, _ := json.MarshalIndent(artifact, "", "  ")
+	fmt.Println(string(data))
+}
+
+func artifactShowIn(root, id string) (*artifacts.Artifact, error) {
+	return artifacts.Show(root, id)
+}
+
+func artifactShow(args []string) {
+	if len(args) != 1 {
+		fmt.Fprintln(os.Stderr, "usage: conctl artifact show <artifact-id>")
+		os.Exit(1)
+	}
+	artifact, err := artifactShowIn(artifactShowRoot, args[0])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	data, _ := json.MarshalIndent(artifact, "", "  ")
+	fmt.Println(string(data))
+}
+
+func artifactLink(args []string) {
+	fs := flag.NewFlagSet("artifact link", flag.ExitOnError)
+	baseURL := fs.String("base-url", strings.TrimRight(os.Getenv("CONOS_BASE_URL"), "/"), "base URL for the artifact link")
+	ttl := fs.Duration("ttl", time.Hour, "signed link TTL")
+	secretFile := fs.String("secret-file", firstNonEmptyString(os.Getenv("CONOS_ARTIFACT_SIGNING_KEY_FILE"), "/etc/conos/artifact-signing.key"), "path to HMAC signing key")
+	fs.Parse(args)
+	if fs.NArg() != 1 {
+		fmt.Fprintln(os.Stderr, "usage: conctl artifact link [--base-url URL] [--ttl 1h] <artifact-id>")
+		os.Exit(1)
+	}
+	artifact, err := artifactShowIn(artifactShowRoot, fs.Arg(0))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	secret, err := os.ReadFile(*secretFile)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	link, err := artifacts.MintSignedLink(*baseURL, artifact, bytesTrimSpace(secret), *ttl, time.Now().UTC())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	if err := artifacts.Save(artifact); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	data, _ := json.MarshalIndent(link, "", "  ")
+	fmt.Println(string(data))
+}
+
+func artifactVerify(args []string) {
+	fs := flag.NewFlagSet("artifact verify", flag.ExitOnError)
+	exp := fs.String("exp", "", "expiry unix timestamp")
+	sig := fs.String("sig", "", "hex signature")
+	secretFile := fs.String("secret-file", firstNonEmptyString(os.Getenv("CONOS_ARTIFACT_SIGNING_KEY_FILE"), "/etc/conos/artifact-signing.key"), "path to HMAC signing key")
+	fs.Parse(args)
+	if fs.NArg() != 1 || *exp == "" || *sig == "" {
+		fmt.Fprintln(os.Stderr, "usage: conctl artifact verify --exp <unix> --sig <hex> <artifact-id>")
+		os.Exit(1)
+	}
+	artifact, err := artifactShowIn(artifactShowRoot, fs.Arg(0))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	secret, err := os.ReadFile(*secretFile)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	if err := artifacts.VerifySignedLink(artifact, bytesTrimSpace(secret), *exp, *sig, time.Now().UTC()); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	fmt.Println("ok")
+}
+
+func runArtifactAuth(args []string) {
+	fs := flag.NewFlagSet("artifact-auth", flag.ExitOnError)
+	socketPath := fs.String("socket", artifacts.DefaultAuthSocket, "Unix socket path")
+	secretFile := fs.String("secret-file", firstNonEmptyString(os.Getenv("CONOS_ARTIFACT_SIGNING_KEY_FILE"), "/etc/conos/artifact-signing.key"), "path to HMAC signing key")
+	root := fs.String("artifacts-root", artifactShowRoot, "artifacts root directory")
+	fs.Parse(args)
+
+	if err := artifacts.ListenAndServeAuth(artifacts.AuthConfig{
+		SocketPath:    *socketPath,
+		SecretFile:    *secretFile,
+		ArtifactsRoot: *root,
+	}); err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
@@ -226,14 +526,29 @@ func runHealthcheck() {
 		briefOutput = cfg.Contracts.BriefOutput
 	}
 
-	if err := healthcheckIn(contractsDir, logPath, briefOutput); err != nil {
+	opts := contracts.EvalOptions{
+		RunID: os.Getenv("CONOS_RUN_ID"),
+		Actor: os.Getenv("CONOS_ACTOR"),
+	}
+	if opts.RunID == "" {
+		opts.RunID = fmt.Sprintf("hc-%d", time.Now().Unix())
+	}
+	if opts.Actor == "" {
+		opts.Actor = "conctl:healthcheck"
+	}
+
+	if err := healthcheckInWithOptions(contractsDir, logPath, briefOutput, opts); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
 
 func healthcheckIn(contractsDir, logPath, briefOutput string) error {
-	allContracts, err := contracts.LoadDir(contractsDir)
+	return healthcheckInWithOptions(contractsDir, logPath, briefOutput, contracts.EvalOptions{})
+}
+
+func healthcheckInWithOptions(contractsDir, logPath, briefOutput string, opts contracts.EvalOptions) error {
+	allContracts, err := sharedcontracts.LoadDir(contractsDir)
 	if err != nil {
 		return fmt.Errorf("healthcheck: loading contracts: %w", err)
 	}
@@ -246,7 +561,8 @@ func healthcheckIn(contractsDir, logPath, briefOutput string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	result := contracts.Evaluate(ctx, allContracts, contractsDir, &contracts.DefaultExecutor{})
+	sharedResult := sharedcontracts.RunAudit(allContracts, selectedContractTags(), contractsDir)
+	result := contracts.FromSharedAudit(sharedResult, opts)
 
 	// Write to log file
 	if f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
@@ -257,21 +573,34 @@ func healthcheckIn(contractsDir, logPath, briefOutput string) error {
 	// Also write to stdout (for journalctl)
 	contracts.WriteLog(result, os.Stdout)
 
+	// Persist a full state snapshot and append-only failure diff log.
+	if err := contracts.PersistSnapshotAndDiff(filepath.Dir(logPath), result); err != nil {
+		fmt.Fprintf(os.Stderr, "healthcheck: snapshot persistence failed: %v\n", err)
+	}
+
 	// Dispatch failure actions
+	contractIndex := make(map[string]*sharedcontracts.Contract, len(allContracts))
+	for _, c := range allContracts {
+		contractIndex[c.ID] = c
+	}
 	for _, cr := range result.Results {
-		if cr.Passed {
+		if cr.Status == "pass" || cr.Status == "skip" || cr.Status == "exempt" {
 			continue
 		}
-		for _, c := range allContracts {
-			for _, ch := range c.Checks {
-				if c.ID == cr.ContractID && ch.Name == cr.CheckName {
-					cmds, err := contracts.DispatchAction(ctx, ch.OnFail, c.Scope, &contracts.DefaultExecutor{})
-					if err != nil {
-						fmt.Fprintf(os.Stderr, "healthcheck: action dispatch for %s: %v\n", c.ID, err)
-					}
-					for _, cmd := range cmds {
-						fmt.Printf("  ACTION: %s\n", cmd)
-					}
+		c := contractIndex[cr.ContractID]
+		if c == nil {
+			continue
+		}
+		for _, ch := range c.Checks {
+			if ch.Name == cr.CheckName {
+				cmds, err := contracts.DispatchAction(ctx, contracts.FailAction{
+					Action: string(ch.OnFail),
+				}, "global", &contracts.DefaultExecutor{})
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "healthcheck: action dispatch for %s: %v\n", c.ID, err)
+				}
+				for _, cmd := range cmds {
+					fmt.Printf("  ACTION: %s\n", cmd)
 				}
 			}
 		}
@@ -282,6 +611,15 @@ func healthcheckIn(contractsDir, logPath, briefOutput string) error {
 		if err := writeBriefOutput(briefOutput, result); err != nil {
 			fmt.Fprintf(os.Stderr, "healthcheck: writing brief output: %v\n", err)
 		}
+	}
+
+	// Auto-complete task-contracts whose completion predicates are satisfied
+	completedTasks, tcErr := contracts.EvaluateTaskCompletions(taskContractsRoot, result, opts.Actor, time.Now())
+	if tcErr != nil {
+		fmt.Fprintf(os.Stderr, "healthcheck: task completion eval: %v\n", tcErr)
+	}
+	for _, id := range completedTasks {
+		fmt.Printf("  TASK-COMPLETE: %s\n", id)
 	}
 
 	// Meta-escalation: if any contracts failed, send one summary task to sysadmin
@@ -299,6 +637,52 @@ func healthcheckIn(contractsDir, logPath, briefOutput string) error {
 		return fmt.Errorf("healthcheck: %d contract(s) failed", result.Failed)
 	}
 	return nil
+}
+
+func runDoctor() {
+	contractsDir := "/srv/conos/contracts"
+	if env := os.Getenv("CONOS_CONTRACTS_DIR"); env != "" {
+		contractsDir = env
+	}
+
+	allContracts, err := sharedcontracts.LoadDir(contractsDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "doctor: loading contracts: %v\n", err)
+		os.Exit(1)
+	}
+	opts := contracts.EvalOptions{
+		RunID: os.Getenv("CONOS_RUN_ID"),
+		Actor: os.Getenv("CONOS_ACTOR"),
+	}
+	if opts.RunID == "" {
+		opts.RunID = fmt.Sprintf("doctor-%d", time.Now().Unix())
+	}
+	if opts.Actor == "" {
+		opts.Actor = "conctl:doctor"
+	}
+
+	sharedResult := sharedcontracts.RunAudit(allContracts, selectedContractTags(), contractsDir)
+	result := contracts.FromSharedAudit(sharedResult, opts)
+	fmt.Print(contracts.FormatDoctorReport(result))
+	if result.Failed > 0 {
+		os.Exit(1)
+	}
+}
+
+func selectedContractTags() []string {
+	if raw := strings.TrimSpace(os.Getenv("CONOS_CONTRACT_TAGS")); raw != "" {
+		var tags []string
+		for _, p := range strings.Split(raw, ",") {
+			tag := strings.TrimSpace(p)
+			if tag != "" {
+				tags = append(tags, tag)
+			}
+		}
+		if len(tags) > 0 {
+			return tags
+		}
+	}
+	return []string{"schedule"}
 }
 
 // writeBriefOutput writes a markdown system-state summary to path.
@@ -345,9 +729,14 @@ func runAgent(name string) {
 
 // runAgentLoop drains the agent's inbox until it is empty, then returns.
 // Returns nil when the inbox is drained; returns an error on runtime failure.
+// The runtime is created once per loop so that state cached on the first Invoke
+// call (e.g. resolved API key) is preserved across all tasks in the run.
 func runAgentLoop(name string, cfg *config.Config, dirs runner.Dirs) error {
+	agent := cfg.ResolvedAgent(name)
+	workspaceDir := filepath.Join(dirs.StateBase, "agents", name, "workspace")
+	rt := conruntime.New(agent, workspaceDir)
 	for {
-		if err := runner.Run(name, cfg, dirs); err != nil {
+		if err := runner.RunWithRuntime(name, cfg, dirs, rt); err != nil {
 			if strings.Contains(err.Error(), "no tasks in inbox") {
 				return nil // Inbox drained
 			}
@@ -377,13 +766,21 @@ func dropTaskTo(inbox, message string) error {
 }
 
 func showStatus() {
-	if err := showStatusIn("/srv/conos/agents"); err != nil {
+	if err := showStatusInWithPreflight("/srv/conos/agents", "/etc/conos/conos.toml", "/etc/conos/env"); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
 
 func showStatusIn(agentsDir string) error {
+	return showStatusInWithPreflight(agentsDir, "", "")
+}
+
+func showStatusInWithPreflight(agentsDir, configPath, envPath string) error {
+	for _, w := range authPreflightWarnings(configPath, envPath) {
+		fmt.Printf("WARN: %s\n", w)
+	}
+
 	entries, err := os.ReadDir(agentsDir)
 	if err != nil {
 		return fmt.Errorf("cannot read agents dir: %w", err)
@@ -415,6 +812,98 @@ func showStatusIn(agentsDir string) error {
 		fmt.Printf("%-20s %s  (%d pending)\n", name, state, pending)
 	}
 	return nil
+}
+
+func authPreflightWarnings(configPath, envPath string) []string {
+	if configPath == "" {
+		return nil
+	}
+	cfg, err := config.Parse(configPath)
+	if err != nil {
+		return nil
+	}
+
+	env := map[string]string{}
+	for _, kv := range os.Environ() {
+		parts := strings.SplitN(kv, "=", 2)
+		if len(parts) == 2 {
+			env[parts[0]] = parts[1]
+		}
+	}
+	for k, v := range parseSimpleEnvFile(envPath) {
+		env[k] = v
+	}
+	return collectAuthWarnings(cfg, env)
+}
+
+func collectAuthWarnings(cfg *config.Config, env map[string]string) []string {
+	if cfg == nil {
+		return nil
+	}
+	var out []string
+	for _, a := range cfg.Agents {
+		resolved := cfg.ResolvedAgent(a.Name)
+		// Preflight is scoped to picoclaw+anthropic where we observed runtime 401s.
+		if resolved.Provider != "anthropic" {
+			continue
+		}
+		if resolved.Runner != "" && resolved.Runner != "picoclaw" {
+			continue
+		}
+
+		keyEnv := resolved.APIKeyEnv
+		if keyEnv == "" {
+			keyEnv = "CONOS_API_KEY"
+		}
+		key := env[keyEnv]
+		if key == "" {
+			key = env["CONOS_AUTH_ANTHROPIC"]
+		}
+		if key == "" {
+			out = append(out, fmt.Sprintf("%s: missing Anthropic credential (checked %s, CONOS_AUTH_ANTHROPIC)", a.Name, keyEnv))
+			continue
+		}
+		if strings.HasPrefix(key, "sk-ant-oat") {
+			out = append(out, fmt.Sprintf("%s: Anthropic OAuth token detected in %s; Messages API may reject OAuth (401). Use a standard API key instead.", a.Name, keyEnv))
+		}
+	}
+	return out
+}
+
+func parseSimpleEnvFile(path string) map[string]string {
+	out := map[string]string{}
+	if path == "" {
+		return out
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return out
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		out[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+	}
+	return out
+}
+
+func bytesTrimSpace(b []byte) []byte {
+	return bytes.TrimSpace(b)
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func parseLogOpts(args []string) *logOpts {

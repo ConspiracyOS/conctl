@@ -53,5 +53,16 @@ func (e *Exec) Invoke(ctx context.Context, prompt, sessionKey string) (string, e
 	if len(output) > maxOutputSize {
 		output = output[:maxOutputSize]
 	}
+	if err := ValidateAdapterExecution(AdapterContract{
+		Name:           e.Cmd,
+		RequireRunID:   false,
+		MaxOutputBytes: maxOutputSize,
+	}, AdapterExecution{
+		RunID:    sessionKey,
+		ExitCode: 0,
+		Stdout:   output,
+	}); err != nil {
+		return "", err
+	}
 	return string(output), nil
 }
