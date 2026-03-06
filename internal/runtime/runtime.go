@@ -24,6 +24,7 @@ func New(agent config.AgentConfig, workspace string) Runtime {
 			Cmd:       agent.Runner,
 			Args:      agent.RunnerArgs,
 			Workspace: workspace,
+			APIKeyEnv: agent.APIKeyEnv,
 		}
 	}
 }

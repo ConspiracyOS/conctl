@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/ConspiracyOS/conctl/internal/strutil"
 )
 
 type Exposure string
@@ -117,7 +119,7 @@ func Create(in CreateInput) (*Artifact, error) {
 		CreatedBy:   in.CreatedBy,
 		RunID:       in.RunID,
 		TaskID:      in.TaskID,
-		Title:       firstNonEmpty(in.Title, strings.TrimSuffix(filename, filepath.Ext(filename))),
+		Title:       strutil.FirstNonEmpty(in.Title, strings.TrimSuffix(filename, filepath.Ext(filename))),
 		Kind:        in.Kind,
 		ContentType: in.ContentType,
 		Filename:    filename,
@@ -193,7 +195,7 @@ func MintSignedLink(baseURL string, artifact *Artifact, secret []byte, ttl time.
 	mac.Write([]byte(payload))
 	sig := hex.EncodeToString(mac.Sum(nil))
 	base := strings.TrimRight(baseURL, "/")
-	linkPath := firstNonEmpty(artifact.LinkPath, filepath.ToSlash(filepath.Join("/artifacts", artifact.ID, artifact.Filename)))
+	linkPath := strutil.FirstNonEmpty(artifact.LinkPath, filepath.ToSlash(filepath.Join("/artifacts", artifact.ID, artifact.Filename)))
 	url := fmt.Sprintf("%s%s?exp=%s&sig=%s", base, linkPath, exp, sig)
 	link := SignedLink{URL: url, ExpiresAt: expiresAt}
 	artifact.SignedLinks = append(artifact.SignedLinks, link)
@@ -282,15 +284,6 @@ func defaultContentType(filename string) string {
 		return ct
 	}
 	return "text/plain; charset=utf-8"
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if strings.TrimSpace(v) != "" {
-			return v
-		}
-	}
-	return ""
 }
 
 func htmlEscape(s string) string {

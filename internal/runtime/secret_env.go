@@ -31,10 +31,16 @@ func ClearSecretEnv(extra ...string) {
 
 // SanitizedEnv returns os.Environ() with known secret vars removed.
 // Use this as cmd.Env when spawning subprocesses that should not inherit secrets.
-func SanitizedEnv() []string {
-	secret := make(map[string]bool, len(knownSecretVars))
+// extra allows callers to filter additional vars (e.g. per-agent APIKeyEnv names).
+func SanitizedEnv(extra ...string) []string {
+	secret := make(map[string]bool, len(knownSecretVars)+len(extra))
 	for _, name := range knownSecretVars {
 		secret[name] = true
+	}
+	for _, name := range extra {
+		if name != "" {
+			secret[name] = true
+		}
 	}
 	env := os.Environ()
 	out := make([]string, 0, len(env))

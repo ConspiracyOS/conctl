@@ -1,5 +1,7 @@
 package config
 
+import "github.com/ConspiracyOS/conctl/internal/strutil"
+
 // Config is the top-level ConspiracyOS configuration.
 type Config struct {
 	System     SystemConfig     `toml:"system"`
@@ -107,16 +109,16 @@ func (c *Config) ResolvedAgent(name string) AgentConfig {
 
 			// Apply tier defaults (tier > base)
 			if resolved.Runner == "" {
-				resolved.Runner = firstNonEmpty(tier.Runner, c.Base.Runner)
+				resolved.Runner = strutil.FirstNonEmpty(tier.Runner, c.Base.Runner)
 			}
 			if resolved.Provider == "" {
-				resolved.Provider = firstNonEmpty(tier.Provider, c.Base.Provider)
+				resolved.Provider = strutil.FirstNonEmpty(tier.Provider, c.Base.Provider)
 			}
 			if resolved.Model == "" {
-				resolved.Model = firstNonEmpty(tier.Model, c.Base.Model)
+				resolved.Model = strutil.FirstNonEmpty(tier.Model, c.Base.Model)
 			}
 			if resolved.APIKeyEnv == "" {
-				resolved.APIKeyEnv = firstNonEmpty(tier.APIKeyEnv, c.Base.APIKeyEnv)
+				resolved.APIKeyEnv = strutil.FirstNonEmpty(tier.APIKeyEnv, c.Base.APIKeyEnv)
 			}
 
 			// Claude Code OAuth tokens only work with the Claude Code CLI.
@@ -166,13 +168,4 @@ func (c *Config) tierConfig(tier string) TierConfig {
 	default:
 		return TierConfig{}
 	}
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
 }

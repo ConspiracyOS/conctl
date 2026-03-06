@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/ConspiracyOS/conctl/internal/config"
 )
@@ -109,6 +110,10 @@ func PlanProvision(cfg *config.Config) []string {
 	if len(cfg.Infra.SSHAuthorizedKeys) > 0 {
 		cmds = append(cmds, "install -d -m 700 /root/.ssh")
 		for _, key := range cfg.Infra.SSHAuthorizedKeys {
+			if strings.ContainsAny(key, "'\\") {
+				cmds = append(cmds, "echo 'warn: skipping SSH key with special characters'")
+				continue
+			}
 			cmds = append(cmds, fmt.Sprintf(
 				`grep -qxF '%s' /root/.ssh/authorized_keys 2>/dev/null || echo '%s' >> /root/.ssh/authorized_keys`,
 				key, key,

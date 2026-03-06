@@ -17,11 +17,14 @@ import (
 	sharedcontracts "github.com/ConspiracyOS/contracts/pkg/contracts"
 
 	"github.com/ConspiracyOS/conctl/internal/artifacts"
+	"github.com/ConspiracyOS/conctl/internal/strutil"
 	"github.com/ConspiracyOS/conctl/internal/bootstrap"
 	"github.com/ConspiracyOS/conctl/internal/config"
 	"github.com/ConspiracyOS/conctl/internal/contracts"
 	"github.com/ConspiracyOS/conctl/internal/runner"
 	conruntime "github.com/ConspiracyOS/conctl/internal/runtime"
+
+	"gopkg.in/yaml.v3"
 )
 
 type logOpts struct {
@@ -54,6 +57,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "  status                            Show agent status")
 		fmt.Fprintln(os.Stderr, "  logs [-f] [-n N] [agent]          Show/stream audit log")
 		fmt.Fprintln(os.Stderr, "  responses                         Show recent agent responses")
+		fmt.Fprintln(os.Stderr, "  manifest show                     Dump expected system state as YAML")
 		fmt.Fprintln(os.Stderr, "  kill <agent>                      Stop a running agent's systemd units")
 		os.Exit(1)
 	}
@@ -103,6 +107,8 @@ func main() {
 		showLogsWithOpts(opts)
 	case "responses":
 		showResponses()
+	case "manifest":
+		runManifest(os.Args[2:])
 	case "kill":
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "usage: conctl kill <agent-name>")
@@ -318,7 +324,7 @@ func artifactLink(args []string) {
 	fs := flag.NewFlagSet("artifact link", flag.ExitOnError)
 	baseURL := fs.String("base-url", strings.TrimRight(os.Getenv("CONOS_BASE_URL"), "/"), "base URL for the artifact link")
 	ttl := fs.Duration("ttl", time.Hour, "signed link TTL")
-	secretFile := fs.String("secret-file", firstNonEmptyString(os.Getenv("CONOS_ARTIFACT_SIGNING_KEY_FILE"), "/etc/conos/artifact-signing.key"), "path to HMAC signing key")
+	secretFile := fs.String("secret-file", strutil.FirstNonEmpty(os.Getenv("CONOS_ARTIFACT_SIGNING_KEY_FILE"), "/etc/conos/artifact-signing.key"), "path to HMAC signing key")
 	fs.Parse(args)
 	if fs.NArg() != 1 {
 		fmt.Fprintln(os.Stderr, "usage: conctl artifact link [--base-url URL] [--ttl 1h] <artifact-id>")
@@ -351,7 +357,7 @@ func artifactVerify(args []string) {
 	fs := flag.NewFlagSet("artifact verify", flag.ExitOnError)
 	exp := fs.String("exp", "", "expiry unix timestamp")
 	sig := fs.String("sig", "", "hex signature")
-	secretFile := fs.String("secret-file", firstNonEmptyString(os.Getenv("CONOS_ARTIFACT_SIGNING_KEY_FILE"), "/etc/conos/artifact-signing.key"), "path to HMAC signing key")
+	secretFile := fs.String("secret-file", strutil.FirstNonEmpty(os.Getenv("CONOS_ARTIFACT_SIGNING_KEY_FILE"), "/etc/conos/artifact-signing.key"), "path to HMAC signing key")
 	fs.Parse(args)
 	if fs.NArg() != 1 || *exp == "" || *sig == "" {
 		fmt.Fprintln(os.Stderr, "usage: conctl artifact verify --exp <unix> --sig <hex> <artifact-id>")
@@ -377,7 +383,7 @@ func artifactVerify(args []string) {
 func runArtifactAuth(args []string) {
 	fs := flag.NewFlagSet("artifact-auth", flag.ExitOnError)
 	socketPath := fs.String("socket", artifacts.DefaultAuthSocket, "Unix socket path")
-	secretFile := fs.String("secret-file", firstNonEmptyString(os.Getenv("CONOS_ARTIFACT_SIGNING_KEY_FILE"), "/etc/conos/artifact-signing.key"), "path to HMAC signing key")
+	secretFile := fs.String("secret-file", strutil.FirstNonEmpty(os.Getenv("CONOS_ARTIFACT_SIGNING_KEY_FILE"), "/etc/conos/artifact-signing.key"), "path to HMAC signing key")
 	root := fs.String("artifacts-root", artifactShowRoot, "artifacts root directory")
 	fs.Parse(args)
 
@@ -425,7 +431,9 @@ func runBootstrap() {
 		for name, content := range units {
 			path := "/etc/systemd/system/" + name
 			fmt.Printf("+ write %s\n", path)
-			os.WriteFile(path, []byte(content), 0644)
+			if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: writing %s: %v\n", path, err)
+			}
 		}
 	}
 
@@ -434,7 +442,9 @@ func runBootstrap() {
 	for name, content := range hcUnits {
 		path := "/etc/systemd/system/" + name
 		fmt.Printf("+ write %s\n", path)
-		os.WriteFile(path, []byte(content), 0644)
+		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: writing %s: %v\n", path, err)
+		}
 	}
 
 	// Reload systemd and enable units
@@ -491,7 +501,9 @@ func runBootstrap() {
 					continue
 				}
 				dst := filepath.Join(skillsDir, e.Name())
-				os.WriteFile(dst, data, 0644)
+				if err := os.WriteFile(dst, data, 0644); err != nil {
+					fmt.Fprintf(os.Stderr, "warning: writing %s: %v\n", dst, err)
+				}
 				fmt.Printf("+ skill %s -> %s\n", e.Name(), dst)
 			}
 		}
@@ -558,10 +570,27 @@ func healthcheckInWithOptions(contractsDir, logPath, briefOutput string, opts co
 		return nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	sharedResult := sharedcontracts.RunAudit(allContracts, selectedContractTags(), contractsDir)
+	// Run audit in a goroutine so the context timeout covers contract evaluation.
+	// RunAudit doesn't accept a context, so we use select to enforce the deadline.
+	type auditResult struct {
+		result sharedcontracts.AuditResult
+	}
+	ch := make(chan auditResult, 1)
+	go func() {
+		r := sharedcontracts.RunAudit(allContracts, selectedContractTags(), contractsDir)
+		ch <- auditResult{result: r}
+	}()
+
+	var sharedResult sharedcontracts.AuditResult
+	select {
+	case ar := <-ch:
+		sharedResult = ar.result
+	case <-ctx.Done():
+		return fmt.Errorf("healthcheck: contract evaluation timed out after 120s")
+	}
 	result := contracts.FromSharedAudit(sharedResult, opts)
 
 	// Write to log file
@@ -639,6 +668,21 @@ func healthcheckInWithOptions(contractsDir, logPath, briefOutput string, opts co
 	return nil
 }
 
+func runManifest(args []string) {
+	if len(args) == 0 || args[0] != "show" {
+		fmt.Fprintln(os.Stderr, "usage: conctl manifest show")
+		os.Exit(1)
+	}
+	cfg := loadConfig()
+	m := bootstrap.FromConfig(cfg)
+	data, err := yaml.Marshal(m)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "manifest: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Print(string(data))
+}
+
 func runDoctor() {
 	contractsDir := "/srv/conos/contracts"
 	if env := os.Getenv("CONOS_CONTRACTS_DIR"); env != "" {
@@ -664,6 +708,22 @@ func runDoctor() {
 	sharedResult := sharedcontracts.RunAudit(allContracts, selectedContractTags(), contractsDir)
 	result := contracts.FromSharedAudit(sharedResult, opts)
 	fmt.Print(contracts.FormatDoctorReport(result))
+
+	// Manifest verification
+	cfg := loadConfig()
+	m := bootstrap.FromConfig(cfg)
+	findings := bootstrap.VerifyLocal(m)
+	manifestFails := 0
+	for _, f := range findings {
+		if f.Status == "fail" {
+			manifestFails++
+			fmt.Printf("MANIFEST %s [%s] %s\n", f.Status, f.Severity, f.What)
+		}
+	}
+	if manifestFails > 0 {
+		fmt.Fprintf(os.Stderr, "\nmanifest: %d finding(s)\n", manifestFails)
+	}
+
 	if result.Failed > 0 {
 		os.Exit(1)
 	}
@@ -756,7 +816,7 @@ func dropTask(message string) {
 }
 
 func dropTaskTo(inbox, message string) error {
-	taskID := fmt.Sprintf("%d", time.Now().Unix())
+	taskID := fmt.Sprintf("%d", time.Now().UnixMicro())
 	taskPath := filepath.Join(inbox, taskID+".task")
 	if err := os.WriteFile(taskPath, []byte(message), 0644); err != nil {
 		return err
@@ -897,15 +957,6 @@ func bytesTrimSpace(b []byte) []byte {
 	return bytes.TrimSpace(b)
 }
 
-func firstNonEmptyString(values ...string) string {
-	for _, v := range values {
-		if strings.TrimSpace(v) != "" {
-			return v
-		}
-	}
-	return ""
-}
-
 func parseLogOpts(args []string) *logOpts {
 	fs := flag.NewFlagSet("logs", flag.ExitOnError)
 	follow := fs.Bool("f", false, "follow the log (stream)")
@@ -971,7 +1022,7 @@ func dropTaskToAgent(agentsDir, agentName, message string) error {
 	if _, err := os.Stat(inbox); err != nil {
 		return fmt.Errorf("agent %q not found (no inbox at %s)", agentName, inbox)
 	}
-	taskID := fmt.Sprintf("%d", time.Now().Unix())
+	taskID := fmt.Sprintf("%d", time.Now().UnixMicro())
 	taskPath := filepath.Join(inbox, taskID+".task")
 	return os.WriteFile(taskPath, []byte(message), 0644)
 }

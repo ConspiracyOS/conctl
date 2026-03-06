@@ -4,9 +4,12 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 )
+
+var validAgentName = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
 
 // DispatchAction executes the failure action for a failed check.
 // Returns the commands that were executed.
@@ -72,6 +75,9 @@ func DispatchAction(ctx context.Context, action FailAction, scope string, execut
 
 // Escalate writes a .task file to the target agent's inbox.
 func Escalate(agentName string, message string) error {
+	if !validAgentName.MatchString(agentName) {
+		return fmt.Errorf("escalate: invalid agent name %q", agentName)
+	}
 	ts := time.Now().Format("20060102-150405")
 	taskPath := fmt.Sprintf("/srv/conos/agents/%s/inbox/%s-healthcheck.task", agentName, ts)
 	return os.WriteFile(taskPath, []byte(message), 0644)

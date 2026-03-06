@@ -18,6 +18,7 @@ type Exec struct {
 	Cmd       string
 	Args      []string
 	Workspace string
+	APIKeyEnv string // per-agent API key env var to filter from child environment
 }
 
 // Invoke runs the configured CLI, passing prompt via stdin and capturing stdout.
@@ -27,7 +28,7 @@ func (e *Exec) Invoke(ctx context.Context, prompt, sessionKey string) (string, e
 	cmd := exec.CommandContext(ctx, e.Cmd, e.Args...)
 	cmd.Stdin = strings.NewReader(prompt)
 	cmd.Dir = e.Workspace
-	cmd.Env = SanitizedEnv()
+	cmd.Env = SanitizedEnv(e.APIKeyEnv)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	var stdout, stderr bytes.Buffer
