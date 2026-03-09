@@ -71,5 +71,10 @@ func ProvisionFromManifest(m Manifest) []string {
 		cmds = append(cmds, fmt.Sprintf("cat > %s << 'UNITEOF'\n%sUNITEOF", path, u.Content))
 	}
 
+	// Setup commands (imperative steps)
+	for _, sc := range m.SetupCommands {
+		cmds = append(cmds, sc.Cmd)
+	}
+
 	return cmds
 }

@@ -58,6 +58,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "  logs [-f] [-n N] [agent]          Show/stream audit log")
 		fmt.Fprintln(os.Stderr, "  responses                         Show recent agent responses")
 		fmt.Fprintln(os.Stderr, "  manifest show                     Dump expected system state as YAML")
+		fmt.Fprintln(os.Stderr, "  brief                             System state brief for agents")
 		fmt.Fprintln(os.Stderr, "  kill <agent>                      Stop a running agent's systemd units")
 		os.Exit(1)
 	}
@@ -109,6 +110,8 @@ func main() {
 		showResponses()
 	case "manifest":
 		runManifest(os.Args[2:])
+	case "brief":
+		runBrief()
 	case "kill":
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "usage: conctl kill <agent-name>")
@@ -412,7 +415,8 @@ func loadConfig() *config.Config {
 
 func runBootstrap() {
 	cfg := loadConfig()
-	cmds := bootstrap.PlanProvision(cfg)
+	m := bootstrap.FromConfig(cfg)
+	cmds := bootstrap.ProvisionFromManifest(m)
 	for _, c := range cmds {
 		fmt.Printf("+ %s\n", c)
 		cmd := exec.Command("sh", "-c", c)
@@ -420,96 +424,15 @@ func runBootstrap() {
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {
 			fmt.Fprintf(os.Stderr, "command failed: %s: %v\n", c, err)
-			// Continue — bootstrap is idempotent
 		}
 	}
 
-	// Write systemd units
-	for _, a := range cfg.Agents {
-		resolved := cfg.ResolvedAgent(a.Name)
-		units := bootstrap.GenerateUnits(resolved)
-		for name, content := range units {
-			path := "/etc/systemd/system/" + name
-			fmt.Printf("+ write %s\n", path)
-			if err := os.WriteFile(path, []byte(content), 0644); err != nil {
-				fmt.Fprintf(os.Stderr, "warning: writing %s: %v\n", path, err)
-			}
-		}
-	}
-
-	// Write healthcheck timer units
-	hcUnits := bootstrap.GenerateHealthcheckUnits(cfg.Contracts.System.HealthcheckInterval)
-	for name, content := range hcUnits {
-		path := "/etc/systemd/system/" + name
-		fmt.Printf("+ write %s\n", path)
-		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: writing %s: %v\n", path, err)
-		}
-	}
-
-	// Reload systemd and enable units
-	exec.Command("systemctl", "daemon-reload").Run()
-	exec.Command("systemctl", "enable", "--now", "conos-healthcheck.timer").Run()
-	for _, a := range cfg.Agents {
-		switch a.Mode {
-		case "on-demand", "":
-			exec.Command("systemctl", "enable", "--now", "conos-"+a.Name+".path").Run()
-		case "continuous":
-			exec.Command("systemctl", "enable", "--now", "conos-"+a.Name+".service").Run()
-		case "cron":
-			exec.Command("systemctl", "enable", "--now", "conos-"+a.Name+".timer").Run()
-		}
-	}
-
-	// Assemble AGENTS.md for each agent — root-owned, read-only (Linux enforces integrity)
+	// AGENTS.md assembly — needs runner package, can't be a shell command
 	for _, a := range cfg.Agents {
 		resolved := cfg.ResolvedAgent(a.Name)
 		if err := runner.AssembleAgentsMD(resolved, runner.DefaultDirs()); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: AGENTS.md assembly for %s: %v\n", a.Name, err)
-			continue
 		}
-		homeDir := fmt.Sprintf("/home/a-%s", a.Name)
-		exec.Command("chown", "root:root", homeDir+"/AGENTS.md").Run()
-		exec.Command("chmod", "0444", homeDir+"/AGENTS.md").Run()
-	}
-
-	// Deploy skills to each agent's workspace/skills/
-	for _, a := range cfg.Agents {
-		user := "a-" + a.Name
-		skillsDir := fmt.Sprintf("/srv/conos/agents/%s/workspace/skills", a.Name)
-		os.MkdirAll(skillsDir, 0755)
-
-		// Collect skills from roles and agent-specific dirs
-		// Outer config: /etc/conos/roles/<role>/skills/, /etc/conos/agents/<name>/skills/
-		var sources []string
-		for _, r := range a.Roles {
-			sources = append(sources, fmt.Sprintf("/etc/conos/roles/%s/skills", r))
-		}
-		sources = append(sources, fmt.Sprintf("/etc/conos/agents/%s/skills", a.Name))
-
-		for _, src := range sources {
-			entries, err := os.ReadDir(src)
-			if err != nil {
-				continue // dir doesn't exist, skip
-			}
-			for _, e := range entries {
-				if e.IsDir() {
-					continue
-				}
-				data, err := os.ReadFile(filepath.Join(src, e.Name()))
-				if err != nil {
-					continue
-				}
-				dst := filepath.Join(skillsDir, e.Name())
-				if err := os.WriteFile(dst, data, 0644); err != nil {
-					fmt.Fprintf(os.Stderr, "warning: writing %s: %v\n", dst, err)
-				}
-				fmt.Printf("+ skill %s -> %s\n", e.Name(), dst)
-			}
-		}
-
-		// Fix ownership
-		exec.Command("chown", "-R", user+":agents", skillsDir).Run()
 	}
 
 	fmt.Println("bootstrap complete")
@@ -727,6 +650,27 @@ func runDoctor() {
 	if result.Failed > 0 {
 		os.Exit(1)
 	}
+}
+
+func runBrief() {
+	contractsDir := "/srv/conos/contracts"
+	if env := os.Getenv("CONOS_CONTRACTS_DIR"); env != "" {
+		contractsDir = env
+	}
+
+	allContracts, err := sharedcontracts.LoadDir(contractsDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "brief: loading contracts: %v\n", err)
+		os.Exit(1)
+	}
+
+	result := sharedcontracts.RunAudit(allContracts, selectedContractTags(), contractsDir)
+	opts := contracts.EvalOptions{
+		RunID: fmt.Sprintf("brief-%d", time.Now().Unix()),
+		Actor: "conctl:brief",
+	}
+	briefResult := contracts.FromSharedAudit(result, opts)
+	fmt.Print(contracts.FormatDoctorReport(briefResult))
 }
 
 func selectedContractTags() []string {

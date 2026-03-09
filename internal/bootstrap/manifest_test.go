@@ -162,7 +162,130 @@ func TestFromConfig_ACLs(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Error("missing ACL: concierge -> sysadmin inbox")
+		t.Error("missing ACL: operator concierge -> operator sysadmin inbox")
+	}
+}
+
+func TestFromConfig_ACLs_OfficerCanTaskAll(t *testing.T) {
+	cfg := &config.Config{
+		Agents: []config.AgentConfig{
+			{Name: "ceo", Tier: "officer"},
+			{Name: "concierge", Tier: "operator"},
+			{Name: "researcher", Tier: "worker"},
+		},
+	}
+	m := FromConfig(cfg)
+
+	targets := map[string]bool{"concierge": false, "researcher": false}
+	for _, acl := range m.ACLs {
+		if acl.User == "a-ceo" && strings.Contains(acl.Path, "/inbox") && acl.Perms == "rwx" {
+			for name := range targets {
+				if strings.Contains(acl.Path, "/"+name+"/") {
+					targets[name] = true
+				}
+			}
+		}
+	}
+	for name, found := range targets {
+		if !found {
+			t.Errorf("officer ceo should be able to task %s", name)
+		}
+	}
+}
+
+func TestFromConfig_ACLs_WorkerCannotTask(t *testing.T) {
+	cfg := &config.Config{
+		Agents: []config.AgentConfig{
+			{Name: "concierge", Tier: "operator"},
+			{Name: "researcher", Tier: "worker"},
+		},
+	}
+	m := FromConfig(cfg)
+
+	for _, acl := range m.ACLs {
+		if acl.User == "a-researcher" && strings.Contains(acl.Path, "/inbox") {
+			t.Errorf("worker should not have inbox ACLs, got %+v", acl)
+		}
+	}
+}
+
+func TestFromConfig_ACLs_OperatorCanTaskNonOfficer(t *testing.T) {
+	cfg := &config.Config{
+		Agents: []config.AgentConfig{
+			{Name: "ceo", Tier: "officer"},
+			{Name: "concierge", Tier: "operator"},
+			{Name: "sysadmin", Tier: "operator"},
+			{Name: "researcher", Tier: "worker"},
+		},
+	}
+	m := FromConfig(cfg)
+
+	canTask := map[string]bool{}
+	for _, acl := range m.ACLs {
+		if acl.User == "a-concierge" && strings.Contains(acl.Path, "/inbox") && acl.Perms == "rwx" {
+			for _, a := range cfg.Agents {
+				if strings.Contains(acl.Path, "/"+a.Name+"/") {
+					canTask[a.Name] = true
+				}
+			}
+		}
+	}
+	if !canTask["sysadmin"] {
+		t.Error("operator concierge should task sysadmin")
+	}
+	if !canTask["researcher"] {
+		t.Error("operator concierge should task researcher")
+	}
+	if canTask["ceo"] {
+		t.Error("operator concierge should NOT task officer ceo")
+	}
+}
+
+func TestFromConfig_ACLs_SysadminRoleGetsConfigAccess(t *testing.T) {
+	cfg := &config.Config{
+		Agents: []config.AgentConfig{
+			{Name: "sysadmin", Tier: "operator", Roles: []string{"sysadmin"}},
+			{Name: "concierge", Tier: "operator", Roles: []string{"router"}},
+		},
+	}
+	m := FromConfig(cfg)
+
+	hasConfig := false
+	hasContracts := false
+	for _, acl := range m.ACLs {
+		if acl.User == "a-sysadmin" && acl.Path == "/srv/conos/config/agents" {
+			hasConfig = true
+		}
+		if acl.User == "a-sysadmin" && acl.Path == "/srv/conos/contracts" {
+			hasContracts = true
+		}
+	}
+	if !hasConfig {
+		t.Error("sysadmin role should have config/agents write ACL")
+	}
+	if !hasContracts {
+		t.Error("sysadmin role should have contracts write ACL")
+	}
+
+	for _, acl := range m.ACLs {
+		if acl.User == "a-concierge" && acl.Path == "/srv/conos/config/agents" {
+			t.Error("non-sysadmin should not have config/agents ACL")
+		}
+	}
+}
+
+func TestFromConfig_ACLs_CannotTaskSelf(t *testing.T) {
+	cfg := &config.Config{
+		Agents: []config.AgentConfig{
+			{Name: "ceo", Tier: "officer"},
+		},
+	}
+	m := FromConfig(cfg)
+
+	for _, acl := range m.ACLs {
+		if acl.User == "a-ceo" && strings.Contains(acl.Path, "/ceo/") {
+			t.Error("agent should not have ACL to task itself")
+		}
 	}
 }
 
@@ -329,6 +452,294 @@ func TestProvisionFromManifest_Units(t *testing.T) {
 	}
 }
 
+func TestFromConfig_SetupCommands_SSHKeys(t *testing.T) {
+	cfg := &config.Config{
+		Infra: config.InfraConfig{
+			SSHAuthorizedKeys: []string{"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 user@host"},
+		},
+		Agents: []config.AgentConfig{
+			{Name: "concierge", Tier: "operator", Mode: "on-demand"},
+		},
+	}
+	m := FromConfig(cfg)
+
+	hasSSH := false
+	for _, sc := range m.SetupCommands {
+		if strings.Contains(sc.Cmd, "authorized_keys") {
+			hasSSH = true
+		}
+	}
+	if !hasSSH {
+		t.Error("expected SSH key setup command")
+	}
+}
+
+func TestFromConfig_SetupCommands_Sudoers(t *testing.T) {
+	cfg := &config.Config{
+		Agents: []config.AgentConfig{
+			{Name: "concierge", Tier: "operator", Mode: "on-demand"},
+		},
+	}
+	m := FromConfig(cfg)
+
+	hasSudoers := false
+	for _, sc := range m.SetupCommands {
+		if strings.Contains(sc.Cmd, "sudoers") {
+			hasSudoers = true
+		}
+	}
+	if !hasSudoers {
+		t.Error("expected sudoers setup command")
+	}
+}
+
+func TestFromConfig_SetupCommands_ContractsCopy(t *testing.T) {
+	cfg := &config.Config{
+		Agents: []config.AgentConfig{
+			{Name: "concierge", Tier: "operator", Mode: "on-demand"},
+		},
+	}
+	m := FromConfig(cfg)
+
+	hasContracts := false
+	for _, sc := range m.SetupCommands {
+		if strings.Contains(sc.Cmd, "contracts") {
+			hasContracts = true
+		}
+	}
+	if !hasContracts {
+		t.Error("expected contracts copy setup command")
+	}
+}
+
+func TestFromConfig_SetupCommands_GitInit(t *testing.T) {
+	cfg := &config.Config{
+		Agents: []config.AgentConfig{
+			{Name: "concierge", Tier: "operator", Mode: "on-demand"},
+		},
+	}
+	m := FromConfig(cfg)
+
+	hasGit := false
+	for _, sc := range m.SetupCommands {
+		if strings.Contains(sc.Cmd, "git init") {
+			hasGit = true
+		}
+	}
+	if !hasGit {
+		t.Error("expected git init setup command")
+	}
+}
+
+func TestFromConfig_SetupCommands_SSHKeyRejectsSpecialChars(t *testing.T) {
+	cfg := &config.Config{
+		Infra: config.InfraConfig{
+			SSHAuthorizedKeys: []string{"ssh-ed25519 AAAA user@host", "bad'key"},
+		},
+		Agents: []config.AgentConfig{
+			{Name: "concierge", Tier: "operator", Mode: "on-demand"},
+		},
+	}
+	m := FromConfig(cfg)
+
+	hasValidKey := false
+	for _, sc := range m.SetupCommands {
+		if strings.Contains(sc.Cmd, "ssh-ed25519 AAAA") {
+			hasValidKey = true
+		}
+	}
+	if !hasValidKey {
+		t.Error("expected valid SSH key in setup commands")
+	}
+	for _, sc := range m.SetupCommands {
+		if strings.Contains(sc.Cmd, "bad'key") {
+			t.Error("special char key should be rejected")
+		}
+	}
+}
+
+func TestProvisionFromManifest_SetupCommands(t *testing.T) {
+	m := Manifest{
+		SetupCommands: []SetupCommand{
+			{Description: "test", Cmd: "echo hello"},
+		},
+	}
+	cmds := ProvisionFromManifest(m)
+
+	hasEcho := false
+	for _, c := range cmds {
+		if c == "echo hello" {
+			hasEcho = true
+		}
+	}
+	if !hasEcho {
+		t.Error("expected setup command in provision output")
+	}
+}
+
+func TestFromConfig_SetupCommands_Tailscale(t *testing.T) {
+	cfg := &config.Config{
+		Infra:  config.InfraConfig{TailscaleHostname: "myhost"},
+		Agents: []config.AgentConfig{{Name: "concierge", Tier: "operator", Mode: "on-demand"}},
+	}
+	m := FromConfig(cfg)
+	hasTailscale := false
+	for _, sc := range m.SetupCommands {
+		if strings.Contains(sc.Cmd, "tailscale") {
+			hasTailscale = true
+		}
+	}
+	if !hasTailscale {
+		t.Error("expected Tailscale setup command when hostname configured")
+	}
+}
+
+func TestFromConfig_SetupCommands_NoTailscale(t *testing.T) {
+	cfg := &config.Config{
+		Agents: []config.AgentConfig{{Name: "concierge", Tier: "operator", Mode: "on-demand"}},
+	}
+	m := FromConfig(cfg)
+	for _, sc := range m.SetupCommands {
+		if strings.Contains(sc.Cmd, "tailscale up") {
+			t.Error("should not have Tailscale command when hostname empty")
+		}
+	}
+}
+
+func TestFromConfig_SetupCommands_Dashboard(t *testing.T) {
+	cfg := &config.Config{
+		Dashboard: config.DashboardConfig{Enabled: true, Port: 8080, Bind: "127.0.0.1"},
+		Agents:    []config.AgentConfig{{Name: "concierge", Tier: "operator", Mode: "on-demand"}},
+	}
+	m := FromConfig(cfg)
+	hasNginx := false
+	for _, sc := range m.SetupCommands {
+		if strings.Contains(sc.Cmd, "nginx") {
+			hasNginx = true
+		}
+	}
+	if !hasNginx {
+		t.Error("expected nginx setup command when dashboard enabled")
+	}
+}
+
+func TestFromConfig_SetupCommands_DashboardDisabled(t *testing.T) {
+	cfg := &config.Config{
+		Dashboard: config.DashboardConfig{Enabled: false},
+		Agents:    []config.AgentConfig{{Name: "concierge", Tier: "operator", Mode: "on-demand"}},
+	}
+	m := FromConfig(cfg)
+	for _, sc := range m.SetupCommands {
+		if strings.Contains(sc.Cmd, "enable --now nginx") {
+			t.Error("should not enable nginx when dashboard disabled")
+		}
+	}
+}
+
+func TestFromConfig_SetupCommands_SystemdReload(t *testing.T) {
+	cfg := &config.Config{
+		Agents: []config.AgentConfig{{Name: "concierge", Tier: "operator", Mode: "on-demand"}},
+	}
+	m := FromConfig(cfg)
+	hasDaemonReload := false
+	for _, sc := range m.SetupCommands {
+		if strings.Contains(sc.Cmd, "daemon-reload") {
+			hasDaemonReload = true
+		}
+	}
+	if !hasDaemonReload {
+		t.Error("expected systemctl daemon-reload setup command")
+	}
+}
+
+func TestFromConfig_SetupCommands_UnitEnable(t *testing.T) {
+	cfg := &config.Config{
+		Agents:    []config.AgentConfig{{Name: "concierge", Tier: "operator", Mode: "on-demand"}},
+		Contracts: config.ContractsConfig{System: config.SystemContracts{HealthcheckInterval: "60s"}},
+	}
+	m := FromConfig(cfg)
+	hasPathEnable := false
+	hasHCEnable := false
+	for _, sc := range m.SetupCommands {
+		if strings.Contains(sc.Cmd, "conos-concierge.path") {
+			hasPathEnable = true
+		}
+		if strings.Contains(sc.Cmd, "conos-healthcheck.timer") {
+			hasHCEnable = true
+		}
+	}
+	if !hasPathEnable {
+		t.Error("expected concierge path unit enable")
+	}
+	if !hasHCEnable {
+		t.Error("expected healthcheck timer enable")
+	}
+}
+
+func TestFromConfig_SetupCommands_SkillDeploy(t *testing.T) {
+	cfg := &config.Config{
+		Agents: []config.AgentConfig{{Name: "concierge", Tier: "operator", Mode: "on-demand", Roles: []string{"router"}}},
+	}
+	m := FromConfig(cfg)
+	hasSkills := false
+	for _, sc := range m.SetupCommands {
+		if strings.Contains(sc.Cmd, "workspace/skills") {
+			hasSkills = true
+		}
+	}
+	if !hasSkills {
+		t.Error("expected skill deployment setup commands")
+	}
+}
+
+func TestFromConfig_SetupCommands_ContinuousMode(t *testing.T) {
+	cfg := &config.Config{
+		Agents: []config.AgentConfig{{Name: "worker", Tier: "worker", Mode: "continuous"}},
+	}
+	m := FromConfig(cfg)
+	hasSvcEnable := false
+	for _, sc := range m.SetupCommands {
+		if strings.Contains(sc.Cmd, "conos-worker.service") && strings.Contains(sc.Cmd, "enable") {
+			hasSvcEnable = true
+		}
+	}
+	if !hasSvcEnable {
+		t.Error("expected continuous mode agent to enable .service unit")
+	}
+}
+
+func TestFromConfig_SetupCommands_CronMode(t *testing.T) {
+	cfg := &config.Config{
+		Agents: []config.AgentConfig{{Name: "reporter", Tier: "worker", Mode: "cron"}},
+	}
+	m := FromConfig(cfg)
+	hasTimerEnable := false
+	for _, sc := range m.SetupCommands {
+		if strings.Contains(sc.Cmd, "conos-reporter.timer") && strings.Contains(sc.Cmd, "enable") {
+			hasTimerEnable = true
+		}
+	}
+	if !hasTimerEnable {
+		t.Error("expected cron mode agent to enable .timer unit")
+	}
+}
+
+func TestFromConfig_SetupCommands_OuterInboxEnable(t *testing.T) {
+	cfg := &config.Config{
+		Agents: []config.AgentConfig{{Name: "concierge", Tier: "operator", Mode: "on-demand"}},
+	}
+	m := FromConfig(cfg)
+	hasOuterInbox := false
+	for _, sc := range m.SetupCommands {
+		if strings.Contains(sc.Cmd, "conos-outer-inbox.path") && strings.Contains(sc.Cmd, "enable") {
+			hasOuterInbox = true
+		}
+	}
+	if !hasOuterInbox {
+		t.Error("expected outer inbox path unit enable")
+	}
+}
+
 func TestManifestYAMLRoundtrip(t *testing.T) {
 	cfg := &config.Config{
 		Agents: []config.AgentConfig{
@@ -367,5 +778,8 @@ func TestManifestYAMLRoundtrip(t *testing.T) {
 	}
 	if len(m2.Units) != len(m.Units) {
 		t.Errorf("units: expected %d, got %d", len(m.Units), len(m2.Units))
+	}
+	if len(m2.SetupCommands) != len(m.SetupCommands) {
+		t.Errorf("setup_commands: expected %d, got %d", len(m.SetupCommands), len(m2.SetupCommands))
 	}
 }

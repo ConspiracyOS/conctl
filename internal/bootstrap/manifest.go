@@ -2,19 +2,21 @@ package bootstrap
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/ConspiracyOS/conctl/internal/config"
 )
 
 // Manifest describes the expected system state for a ConspiracyOS instance.
-// Generated from Config, consumed by PlanProvision and Verify.
+// Generated from Config, consumed by ProvisionFromManifest and Verify.
 type Manifest struct {
 	Groups      []Group       `yaml:"groups"`
 	Users       []User        `yaml:"users"`
 	Directories []Directory   `yaml:"directories"`
 	Files       []File        `yaml:"files"`
 	ACLs        []ACL         `yaml:"acls"`
-	Units       []SystemdUnit `yaml:"units"`
+	Units         []SystemdUnit  `yaml:"units"`
+	SetupCommands []SetupCommand `yaml:"setup_commands"`
 }
 
 type Group struct {
@@ -55,6 +57,11 @@ type SystemdUnit struct {
 	Name    string `yaml:"name"`
 	Content string `yaml:"content"`
 	Enabled bool   `yaml:"enabled"`
+}
+
+type SetupCommand struct {
+	Description string `yaml:"description"`
+	Cmd         string `yaml:"cmd"`
 }
 
 // FromConfig generates a Manifest from the current config.
@@ -127,17 +134,45 @@ func FromConfig(cfg *config.Config) Manifest {
 		File{Path: "/etc/conos/artifact-signing.key", Mode: "600", Owner: "root", Group: "root"},
 	)
 
-	// ACLs — cross-agent tasking + shared dirs.
-	// NOTE: concierge↔sysadmin ACLs are hardcoded to match the legacy PlanProvision
-	// behavior. These assume both agents exist. When PlanProvision is retired,
-	// derive cross-agent ACLs from the actual agent list instead.
+	// ACLs — derived from agent tiers.
+	// Officers can task any agent. Operators can task non-officers. Workers cannot task.
+	for _, src := range cfg.Agents {
+		srcUser := "a-" + src.Name
+
+		for _, dst := range cfg.Agents {
+			if src.Name == dst.Name {
+				continue
+			}
+
+			canTask := false
+			switch src.Tier {
+			case "officer":
+				canTask = true
+			case "operator":
+				canTask = dst.Tier != "officer"
+			}
+
+			if canTask {
+				m.ACLs = append(m.ACLs,
+					ACL{Path: fmt.Sprintf("/srv/conos/agents/%s", dst.Name), User: srcUser, Perms: "x"},
+					ACL{Path: fmt.Sprintf("/srv/conos/agents/%s/inbox", dst.Name), User: srcUser, Perms: "rwx"},
+				)
+			}
+		}
+
+		// Role-based: sysadmin role gets config + contracts write access
+		for _, role := range src.Roles {
+			if role == "sysadmin" {
+				m.ACLs = append(m.ACLs,
+					ACL{Path: "/srv/conos/config/agents", User: srcUser, Perms: "rwx"},
+					ACL{Path: "/srv/conos/contracts", User: srcUser, Perms: "rwx"},
+				)
+			}
+		}
+	}
+
+	// Shared dirs: all agents can write audit logs and ledger entries
 	m.ACLs = append(m.ACLs,
-		ACL{Path: "/srv/conos/agents/sysadmin", User: "a-concierge", Perms: "x"},
-		ACL{Path: "/srv/conos/agents/sysadmin/inbox", User: "a-concierge", Perms: "rwx"},
-		ACL{Path: "/srv/conos/agents/concierge", User: "a-sysadmin", Perms: "x"},
-		ACL{Path: "/srv/conos/agents/concierge/inbox", User: "a-sysadmin", Perms: "rwx"},
-		ACL{Path: "/srv/conos/config/agents", User: "a-sysadmin", Perms: "rwx"},
-		ACL{Path: "/srv/conos/contracts", User: "a-sysadmin", Perms: "rwx"},
 		ACL{Path: "/srv/conos/logs/audit", Group: "agents", Perms: "rwx"},
 		ACL{Path: "/srv/conos/logs/audit", Group: "agents", Perms: "rw", Default: true},
 		ACL{Path: "/srv/conos/ledger", Group: "agents", Perms: "rwx"},
@@ -191,6 +226,193 @@ EnvironmentFile=-/etc/conos/env
 `,
 		Enabled: false, // activated by .path, not enabled directly
 	})
+
+	// Setup commands — imperative steps that don't fit the declarative model.
+
+	// SSH authorized keys
+	if len(cfg.Infra.SSHAuthorizedKeys) > 0 {
+		m.SetupCommands = append(m.SetupCommands,
+			SetupCommand{Description: "create SSH dir", Cmd: "install -d -m 700 /root/.ssh"},
+		)
+		for _, key := range cfg.Infra.SSHAuthorizedKeys {
+			if strings.ContainsAny(key, "'\\") {
+				continue
+			}
+			m.SetupCommands = append(m.SetupCommands, SetupCommand{
+				Description: "add SSH key",
+				Cmd: fmt.Sprintf(
+					`grep -qxF '%s' /root/.ssh/authorized_keys 2>/dev/null || echo '%s' >> /root/.ssh/authorized_keys`,
+					key, key,
+				),
+			})
+		}
+		m.SetupCommands = append(m.SetupCommands,
+			SetupCommand{Description: "fix SSH key perms", Cmd: "chmod 600 /root/.ssh/authorized_keys"},
+		)
+	}
+
+	// Sudoers
+	m.SetupCommands = append(m.SetupCommands,
+		SetupCommand{Description: "install sudoers", Cmd: "cp /etc/conos/sudoers.d/* /etc/sudoers.d/ 2>/dev/null || true"},
+		SetupCommand{Description: "fix sudoers perms", Cmd: "chmod 440 /etc/sudoers.d/conos-* 2>/dev/null || true"},
+		SetupCommand{Description: "validate sudoers", Cmd: "visudo -c || echo 'warn: sudoers validation failed'"},
+	)
+
+	// Copy system contracts
+	m.SetupCommands = append(m.SetupCommands,
+		SetupCommand{Description: "copy contracts", Cmd: "cp /etc/conos/contracts/*.yaml /srv/conos/contracts/ 2>/dev/null || true"},
+		SetupCommand{Description: "copy contract scripts", Cmd: "cp -r /etc/conos/contracts/scripts/ /srv/conos/contracts/scripts/ 2>/dev/null || true"},
+	)
+
+	// Initialize /srv/conos as git repo
+	m.SetupCommands = append(m.SetupCommands, SetupCommand{
+		Description: "git init /srv/conos",
+		Cmd: `git config --system --add safe.directory /srv/conos
+cd /srv/conos && git init && git config user.name 'conos' && git config user.email 'conos@localhost' && cat > .gitignore << 'GITIGNORE'
+agents/*/workspace/
+artifacts/
+*.env
+*.pem
+*.key
+GITIGNORE
+git add -A && git commit -m 'initial state' --allow-empty || true
+chown -R root:agents /srv/conos/.git && chmod -R g+w /srv/conos/.git`,
+	})
+
+	// Signing key generation
+	m.SetupCommands = append(m.SetupCommands, SetupCommand{
+		Description: "generate artifact signing key",
+		Cmd:         "test -f /etc/conos/artifact-signing.key || (umask 077 && head -c 32 /dev/urandom | xxd -p -c 32 > /etc/conos/artifact-signing.key)",
+	})
+
+	// Enable auditd
+	m.SetupCommands = append(m.SetupCommands,
+		SetupCommand{Description: "enable auditd", Cmd: "systemctl enable --now auditd 2>/dev/null || true"},
+	)
+
+	// Tailscale
+	if cfg.Infra.TailscaleHostname != "" {
+		loginServerFlag := ""
+		if cfg.Infra.TailscaleLoginServer != "" {
+			loginServerFlag = fmt.Sprintf(" --login-server=%s", cfg.Infra.TailscaleLoginServer)
+		}
+		m.SetupCommands = append(m.SetupCommands, SetupCommand{
+			Description: "tailscale setup",
+			Cmd: fmt.Sprintf(`if [ -f /var/lib/tailscale-persist/tailscaled.state ]; then
+    mkdir -p /var/lib/tailscale
+    cp /var/lib/tailscale-persist/tailscaled.state /var/lib/tailscale/tailscaled.state
+    echo "tailscale: restored state from persistent volume"
+fi
+systemctl restart tailscaled 2>/dev/null || true
+sleep 3
+TS_STATUS=$(tailscale status --json 2>/dev/null | jq -r '.BackendState // "NoState"' 2>/dev/null || echo "NoState")
+if [ "$TS_STATUS" = "Running" ]; then
+    echo "tailscale: already connected ($(tailscale ip -4))"
+else
+    TSKEY="${TS_AUTHKEY:-$TS_AUTH_KEY}"
+    if [ -n "$TSKEY" ]; then
+        tailscale up --hostname=%s --authkey="$TSKEY"%s --accept-routes
+        echo "tailscale: $(tailscale ip -4)"
+    else
+        echo "warn: tailscale not connected and no TS_AUTHKEY"
+    fi
+fi
+if [ -d /var/lib/tailscale-persist ] && [ -f /var/lib/tailscale/tailscaled.state ]; then
+    cp /var/lib/tailscale/tailscaled.state /var/lib/tailscale-persist/tailscaled.state
+    echo "tailscale: state persisted to volume"
+fi`, cfg.Infra.TailscaleHostname, loginServerFlag),
+		})
+	}
+
+	// Dashboard (nginx)
+	if cfg.Dashboard.Enabled {
+		nginxConf := fmt.Sprintf(`server {
+    listen %s:%d;
+    root /srv/conos/status;
+    index index.html;
+    location / {
+        limit_except GET HEAD { deny all; }
+    }
+}`, cfg.Dashboard.Bind, cfg.Dashboard.Port)
+		m.SetupCommands = append(m.SetupCommands,
+			SetupCommand{Description: "write nginx config", Cmd: fmt.Sprintf("cat > /etc/nginx/sites-available/conspiracyos << 'EOF'\n%s\nEOF", nginxConf)},
+			SetupCommand{Description: "enable nginx site", Cmd: "ln -sf /etc/nginx/sites-available/conspiracyos /etc/nginx/sites-enabled/conspiracyos"},
+		)
+		if cfg.Infra.TailscaleHostname != "" {
+			m.SetupCommands = append(m.SetupCommands, SetupCommand{
+				Description: "bind nginx to tailscale IP",
+				Cmd: `TSIP=$(tailscale ip -4 2>/dev/null || true)
+if [ -n "$TSIP" ]; then
+    sed -i "s/listen .*/listen $TSIP:80;/" /etc/nginx/sites-enabled/conspiracyos
+fi`,
+			})
+		}
+		m.SetupCommands = append(m.SetupCommands,
+			SetupCommand{Description: "start nginx", Cmd: "systemctl enable --now nginx"},
+			SetupCommand{Description: "generate initial status page", Cmd: "/usr/local/bin/conos-status-page"},
+		)
+	} else {
+		m.SetupCommands = append(m.SetupCommands,
+			SetupCommand{Description: "disable nginx", Cmd: "systemctl disable --now nginx 2>/dev/null || true"},
+			SetupCommand{Description: "remove nginx site", Cmd: "rm -f /etc/nginx/sites-enabled/conspiracyos"},
+		)
+	}
+
+	// Systemd reload and unit enablement
+	m.SetupCommands = append(m.SetupCommands,
+		SetupCommand{Description: "reload systemd", Cmd: "systemctl daemon-reload"},
+		SetupCommand{Description: "enable healthcheck timer", Cmd: "systemctl enable --now conos-healthcheck.timer"},
+	)
+	for _, a := range cfg.Agents {
+		switch a.Mode {
+		case "on-demand", "":
+			m.SetupCommands = append(m.SetupCommands, SetupCommand{
+				Description: fmt.Sprintf("enable %s inbox watcher", a.Name),
+				Cmd:         fmt.Sprintf("systemctl enable --now conos-%s.path", a.Name),
+			})
+		case "continuous":
+			m.SetupCommands = append(m.SetupCommands, SetupCommand{
+				Description: fmt.Sprintf("enable %s service", a.Name),
+				Cmd:         fmt.Sprintf("systemctl enable --now conos-%s.service", a.Name),
+			})
+		case "cron":
+			m.SetupCommands = append(m.SetupCommands, SetupCommand{
+				Description: fmt.Sprintf("enable %s timer", a.Name),
+				Cmd:         fmt.Sprintf("systemctl enable --now conos-%s.timer", a.Name),
+			})
+		}
+	}
+
+	// Enable outer inbox watcher
+	m.SetupCommands = append(m.SetupCommands,
+		SetupCommand{Description: "enable outer inbox watcher", Cmd: "systemctl enable --now conos-outer-inbox.path"},
+	)
+
+	// AGENTS.md ownership fix and skill deployment for each agent
+	for _, a := range cfg.Agents {
+		user := "a-" + a.Name
+
+		// AGENTS.md assembly is handled in main.go (needs runner package).
+		// Here we just fix ownership after assembly.
+		m.SetupCommands = append(m.SetupCommands, SetupCommand{
+			Description: fmt.Sprintf("fix AGENTS.md ownership for %s", a.Name),
+			Cmd:         fmt.Sprintf("chown root:root /home/%s/AGENTS.md 2>/dev/null || true && chmod 0444 /home/%s/AGENTS.md 2>/dev/null || true", user, user),
+		})
+
+		// Deploy skills from roles and agent-specific dirs
+		skillsDir := fmt.Sprintf("/srv/conos/agents/%s/workspace/skills", a.Name)
+		cpCmd := fmt.Sprintf("mkdir -p %s", skillsDir)
+		for _, r := range a.Roles {
+			cpCmd += fmt.Sprintf(" && cp /etc/conos/roles/%s/skills/*.md %s/ 2>/dev/null || true", r, skillsDir)
+		}
+		cpCmd += fmt.Sprintf(" && cp /etc/conos/agents/%s/skills/*.md %s/ 2>/dev/null || true", a.Name, skillsDir)
+		cpCmd += fmt.Sprintf(" && chown -R %s:agents %s", user, skillsDir)
+
+		m.SetupCommands = append(m.SetupCommands, SetupCommand{
+			Description: fmt.Sprintf("deploy skills for %s", a.Name),
+			Cmd:         cpCmd,
+		})
+	}
 
 	return m
 }
