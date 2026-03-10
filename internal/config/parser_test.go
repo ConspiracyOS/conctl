@@ -598,3 +598,32 @@ runner_args = ["--model", "claude-opus-4-6", "--print"]
 		t.Errorf("expected explicit runner_args preserved, got %v", agent.RunnerArgs)
 	}
 }
+
+func TestResolvedAgent_OAuthTokenValueDetection(t *testing.T) {
+	// When CONOS_API_KEY contains an OAuth token (sk-ant-oat prefix),
+	// the runner should be forced to claude-code even though the env var
+	// name is not CLAUDE_CODE_OAUTH_TOKEN.
+	t.Setenv("CONOS_TEST_OAUTH_KEY", "sk-ant-oat-fake-token-for-test")
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "conos.toml")
+	os.WriteFile(path, []byte(`
+[base]
+api_key_env = "CONOS_TEST_OAUTH_KEY"
+provider = "anthropic"
+
+[[agents]]
+name = "concierge"
+tier = "operator"
+`), 0644)
+
+	cfg, err := Parse(path)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	agent := cfg.ResolvedAgent("concierge")
+	if agent.Runner != "claude-code" {
+		t.Errorf("expected runner forced to claude-code for OAuth token value, got %q", agent.Runner)
+	}
+}

@@ -1,6 +1,11 @@
 package config
 
-import "github.com/ConspiracyOS/conctl/internal/strutil"
+import (
+	"os"
+	"strings"
+
+	"github.com/ConspiracyOS/conctl/internal/strutil"
+)
 
 // Config is the top-level ConspiracyOS configuration.
 type Config struct {
@@ -124,7 +129,10 @@ func (c *Config) ResolvedAgent(name string) AgentConfig {
 
 			// Claude Code OAuth tokens only work with the Claude Code CLI.
 			// Force the runner so PicoClaw doesn't try to use an OAuth token as an API key.
-			if resolved.APIKeyEnv == "CLAUDE_CODE_OAUTH_TOKEN" && (resolved.Runner == "" || resolved.Runner == "picoclaw") {
+			// Detect by env var name OR by token value prefix (sk-ant-oat).
+			isOAuth := resolved.APIKeyEnv == "CLAUDE_CODE_OAUTH_TOKEN" ||
+				strings.HasPrefix(os.Getenv(resolved.APIKeyEnv), "sk-ant-oat")
+			if isOAuth && (resolved.Runner == "" || resolved.Runner == "picoclaw") {
 				resolved.Runner = "claude-code"
 				if len(resolved.RunnerArgs) == 0 {
 					resolved.RunnerArgs = []string{"--print"}
