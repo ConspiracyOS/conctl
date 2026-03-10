@@ -34,6 +34,8 @@ func main() {
 		fmt.Fprintln(os.Stderr, "  responses                         Show recent agent responses")
 		fmt.Fprintln(os.Stderr, "  manifest show                     Dump expected system state as YAML")
 		fmt.Fprintln(os.Stderr, "  brief                             System state brief for agents")
+		fmt.Fprintln(os.Stderr, "  package install|remove|list        Manage agent packages")
+		fmt.Fprintln(os.Stderr, "  protocol check|list               Evaluate protocol contracts")
 		fmt.Fprintln(os.Stderr, "  kill <agent>                      Stop a running agent's systemd units")
 		fmt.Fprintln(os.Stderr, "  clear-sessions [agent]            Clear agent session files")
 		os.Exit(1)
@@ -88,6 +90,10 @@ func main() {
 		runManifest(os.Args[2:])
 	case "brief":
 		runBrief()
+	case "package":
+		runPackage(os.Args[2:])
+	case "protocol":
+		runProtocol(os.Args[2:])
 	case "kill":
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "usage: conctl kill <agent-name>")

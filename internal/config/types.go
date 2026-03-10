@@ -95,6 +95,7 @@ type AgentConfig struct {
 	APIKeyEnv    string   `toml:"api_key_env"`
 	MaxSessions  int      `toml:"max_sessions"`
 	Instructions string   `toml:"instructions"`
+	Packages     []string `toml:"packages"` // apt packages to install for this agent
 }
 
 // ResolvedAgent returns an AgentConfig with base and tier defaults applied.

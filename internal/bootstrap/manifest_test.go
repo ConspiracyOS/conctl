@@ -209,7 +209,7 @@ func TestFromConfig_ACLs_WorkerCannotTask(t *testing.T) {
 	}
 }
 
-func TestFromConfig_ACLs_OperatorCanTaskNonOfficer(t *testing.T) {
+func TestFromConfig_ACLs_OperatorCanTaskAnyAgent(t *testing.T) {
 	cfg := &config.Config{
 		Agents: []config.AgentConfig{
 			{Name: "ceo", Tier: "officer"},
@@ -236,8 +236,8 @@ func TestFromConfig_ACLs_OperatorCanTaskNonOfficer(t *testing.T) {
 	if !canTask["researcher"] {
 		t.Error("operator concierge should task researcher")
 	}
-	if canTask["ceo"] {
-		t.Error("operator concierge should NOT task officer ceo")
+	if !canTask["ceo"] {
+		t.Error("operator concierge should task officer ceo")
 	}
 }
 

@@ -135,7 +135,7 @@ func FromConfig(cfg *config.Config) Manifest {
 	)
 
 	// ACLs — derived from agent tiers.
-	// Officers can task any agent. Operators can task non-officers. Workers cannot task.
+	// Officers and operators can task any agent. Workers cannot task.
 	for _, src := range cfg.Agents {
 		srcUser := "a-" + src.Name
 
@@ -146,10 +146,8 @@ func FromConfig(cfg *config.Config) Manifest {
 
 			canTask := false
 			switch src.Tier {
-			case "officer":
+			case "officer", "operator":
 				canTask = true
-			case "operator":
-				canTask = dst.Tier != "officer"
 			}
 
 			if canTask {
@@ -388,6 +386,14 @@ fi`,
 		SetupCommand{Description: "enable outer inbox watcher", Cmd: "systemctl enable --now conos-outer-inbox.path"},
 	)
 
+	// Auditd watches on critical paths
+	m.SetupCommands = append(m.SetupCommands,
+		SetupCommand{Description: "auditd watch /etc/conos", Cmd: "auditctl -w /etc/conos/ -p wa -k conos_config_tamper 2>/dev/null || true"},
+		SetupCommand{Description: "auditd watch /etc/sudoers.d", Cmd: "auditctl -w /etc/sudoers.d/ -p wa -k conos_sudoers_tamper 2>/dev/null || true"},
+		SetupCommand{Description: "auditd watch systemd units", Cmd: "auditctl -w /etc/systemd/system/ -p wa -k conos_systemd_tamper 2>/dev/null || true"},
+		SetupCommand{Description: "auditd watch conctl binary", Cmd: "auditctl -w /usr/local/bin/conctl -p wa -k conos_binary_tamper 2>/dev/null || true"},
+	)
+
 	// AGENTS.md ownership fix and skill deployment for each agent
 	for _, a := range cfg.Agents {
 		user := "a-" + a.Name
@@ -413,6 +419,41 @@ fi`,
 			Cmd:         cpCmd,
 		})
 	}
+
+	// Install agent packages declared in config
+	var allPkgs []string
+	for _, a := range cfg.Agents {
+		allPkgs = append(allPkgs, a.Packages...)
+	}
+	if len(allPkgs) > 0 {
+		// Deduplicate
+		seen := map[string]bool{}
+		var unique []string
+		for _, p := range allPkgs {
+			if !seen[p] {
+				seen[p] = true
+				unique = append(unique, p)
+			}
+		}
+		m.SetupCommands = append(m.SetupCommands, SetupCommand{
+			Description: "install agent packages",
+			Cmd:         fmt.Sprintf("apt-get install -y --no-install-recommends %s", strings.Join(unique, " ")),
+		})
+	}
+
+	// Immutable bit on critical files — last step after all provisioning.
+	// chattr +i prevents modification even by root without CAP_LINUX_IMMUTABLE.
+	m.SetupCommands = append(m.SetupCommands,
+		SetupCommand{Description: "immutable: config", Cmd: "chattr +i /etc/conos/conos.toml 2>/dev/null || true"},
+		SetupCommand{Description: "immutable: env", Cmd: "chattr +i /etc/conos/env 2>/dev/null || true"},
+		SetupCommand{Description: "immutable: signing key", Cmd: "chattr +i /etc/conos/artifact-signing.key 2>/dev/null || true"},
+		SetupCommand{Description: "immutable: skills", Cmd: "find /etc/conos/roles -name '*.md' -exec chattr +i {} + 2>/dev/null || true"},
+		SetupCommand{Description: "immutable: agent instructions", Cmd: "find /etc/conos/agents -name 'AGENTS.md' -exec chattr +i {} + 2>/dev/null || true"},
+		SetupCommand{Description: "immutable: contracts", Cmd: "find /etc/conos/contracts -name '*.yaml' -exec chattr +i {} + 2>/dev/null || true"},
+		SetupCommand{Description: "immutable: sudoers", Cmd: "find /etc/sudoers.d -name 'conos-*' -exec chattr +i {} + 2>/dev/null || true"},
+		SetupCommand{Description: "immutable: systemd units", Cmd: "find /etc/systemd/system -name 'conos-*' -exec chattr +i {} + 2>/dev/null || true"},
+		SetupCommand{Description: "immutable: conctl binary", Cmd: "chattr +i /usr/local/bin/conctl 2>/dev/null || true"},
+	)
 
 	return m
 }
