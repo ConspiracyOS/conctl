@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/ConspiracyOS/conctl/internal/bootstrap"
 )
 
 var validPackageName = regexp.MustCompile(`^[a-z0-9][a-z0-9.+\-]+$`)
@@ -33,11 +35,11 @@ func runPackage(args []string) {
 
 func runPackageInstall(args []string) {
 	fs := flag.NewFlagSet("package install", flag.ExitOnError)
-	agent := fs.String("agent", "", "agent the package is for (informational)")
+	agent := fs.String("agent", "", "agent the package is for (required)")
 	save := fs.Bool("save", false, "persist to conos.toml")
 	fs.Parse(args)
 
-	if fs.NArg() < 1 {
+	if fs.NArg() < 1 || *agent == "" {
 		fmt.Fprintln(os.Stderr, "usage: conctl package install <package> --agent <name> [--save]")
 		os.Exit(1)
 	}
@@ -61,10 +63,6 @@ func runPackageInstall(args []string) {
 	logPackageAction("install", pkg, *agent)
 
 	if *save {
-		if *agent == "" {
-			fmt.Fprintln(os.Stderr, "error: --agent is required with --save")
-			os.Exit(1)
-		}
 		if err := savePackageToConfig(pkg, *agent); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: installed but failed to save to config: %v\n", err)
 		} else {
@@ -210,7 +208,9 @@ func savePackageToConfig(pkg, agent string) error {
 		lines = append(lines[:insertAfter+1], append([]string{newLine}, lines[insertAfter+1:]...)...)
 	}
 
-	return os.WriteFile(configPath, []byte(strings.Join(lines, "\n")), 0644)
+	return bootstrap.WithMutable(configPath, func() error {
+		return os.WriteFile(configPath, []byte(strings.Join(lines, "\n")), 0644)
+	})
 }
 
 func removePackageFromConfig(pkg, agent string) error {
@@ -248,5 +248,7 @@ func removePackageFromConfig(pkg, agent string) error {
 		}
 	}
 
-	return os.WriteFile(configPath, []byte(strings.Join(lines, "\n")), 0644)
+	return bootstrap.WithMutable(configPath, func() error {
+		return os.WriteFile(configPath, []byte(strings.Join(lines, "\n")), 0644)
+	})
 }

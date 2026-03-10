@@ -394,6 +394,27 @@ fi`,
 		SetupCommand{Description: "auditd watch conctl binary", Cmd: "auditctl -w /usr/local/bin/conctl -p wa -k conos_binary_tamper 2>/dev/null || true"},
 	)
 
+	// Install agent packages declared in config (before skills, which may depend on them)
+	var allPkgs []string
+	for _, a := range cfg.Agents {
+		allPkgs = append(allPkgs, a.Packages...)
+	}
+	if len(allPkgs) > 0 {
+		// Deduplicate
+		seen := map[string]bool{}
+		var unique []string
+		for _, p := range allPkgs {
+			if !seen[p] {
+				seen[p] = true
+				unique = append(unique, p)
+			}
+		}
+		m.SetupCommands = append(m.SetupCommands, SetupCommand{
+			Description: "install agent packages",
+			Cmd:         fmt.Sprintf("apt-get install -y --no-install-recommends %s", strings.Join(unique, " ")),
+		})
+	}
+
 	// AGENTS.md ownership fix and skill deployment for each agent
 	for _, a := range cfg.Agents {
 		user := "a-" + a.Name
@@ -417,27 +438,6 @@ fi`,
 		m.SetupCommands = append(m.SetupCommands, SetupCommand{
 			Description: fmt.Sprintf("deploy skills for %s", a.Name),
 			Cmd:         cpCmd,
-		})
-	}
-
-	// Install agent packages declared in config
-	var allPkgs []string
-	for _, a := range cfg.Agents {
-		allPkgs = append(allPkgs, a.Packages...)
-	}
-	if len(allPkgs) > 0 {
-		// Deduplicate
-		seen := map[string]bool{}
-		var unique []string
-		for _, p := range allPkgs {
-			if !seen[p] {
-				seen[p] = true
-				unique = append(unique, p)
-			}
-		}
-		m.SetupCommands = append(m.SetupCommands, SetupCommand{
-			Description: "install agent packages",
-			Cmd:         fmt.Sprintf("apt-get install -y --no-install-recommends %s", strings.Join(unique, " ")),
 		})
 	}
 
