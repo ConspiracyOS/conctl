@@ -211,14 +211,25 @@ func savePackageToConfig(pkg, agent string) error {
 	if packagesLine >= 0 {
 		// Update existing packages line
 		existing := lines[packagesLine]
-		// Parse existing packages
-		if strings.Contains(existing, pkg) {
+		if strings.Contains(existing, fmt.Sprintf("%q", pkg)) {
 			return nil // already present
 		}
-		// Add to the array
-		idx := strings.LastIndex(existing, "]")
-		if idx > 0 {
-			lines[packagesLine] = existing[:idx] + fmt.Sprintf(", %q]", pkg)
+		// Parse existing array, add new package, rebuild
+		start := strings.Index(existing, "[")
+		end := strings.LastIndex(existing, "]")
+		if start >= 0 && end > start {
+			inner := strings.TrimSpace(existing[start+1 : end])
+			var items []string
+			if inner != "" {
+				for _, item := range strings.Split(inner, ",") {
+					item = strings.TrimSpace(item)
+					if item != "" {
+						items = append(items, item)
+					}
+				}
+			}
+			items = append(items, fmt.Sprintf("%q", pkg))
+			lines[packagesLine] = existing[:start] + "[" + strings.Join(items, ", ") + "]"
 		}
 	} else if insertAfter >= 0 {
 		// Insert new packages line
@@ -253,11 +264,21 @@ func removePackageFromConfig(pkg, agent string) error {
 			agentFound = false
 		}
 		if inAgent && agentFound && strings.HasPrefix(trimmed, "packages") {
-			// Remove the package from the array
-			newLine := strings.Replace(line, fmt.Sprintf(", %q", pkg), "", 1)
-			newLine = strings.Replace(newLine, fmt.Sprintf("%q, ", pkg), "", 1)
-			newLine = strings.Replace(newLine, fmt.Sprintf("%q", pkg), "", 1)
-			lines[i] = newLine
+			// Parse the array, remove the package, rebuild cleanly
+			start := strings.Index(line, "[")
+			end := strings.LastIndex(line, "]")
+			if start >= 0 && end > start {
+				inner := line[start+1 : end]
+				var kept []string
+				for _, item := range strings.Split(inner, ",") {
+					item = strings.TrimSpace(item)
+					if item == "" || item == fmt.Sprintf("%q", pkg) {
+						continue
+					}
+					kept = append(kept, item)
+				}
+				lines[i] = line[:start] + "[" + strings.Join(kept, ", ") + "]"
+			}
 			break
 		}
 		if strings.HasPrefix(trimmed, "name") && strings.Contains(trimmed, fmt.Sprintf("%q", agent)) {
