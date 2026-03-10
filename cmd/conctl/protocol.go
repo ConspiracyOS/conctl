@@ -28,27 +28,10 @@ func runProtocol(args []string) {
 }
 
 func runProtocolCheck(args []string) {
-	// Reorder args so contract ID (non-flag) can appear before flags.
-	// flag.Parse stops at first non-flag, so move it to the end.
-	var reordered []string
-	var positional []string
-	for i := 0; i < len(args); i++ {
-		if strings.HasPrefix(args[i], "-") {
-			reordered = append(reordered, args[i])
-			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
-				reordered = append(reordered, args[i+1])
-				i++
-			}
-		} else {
-			positional = append(positional, args[i])
-		}
-	}
-	reordered = append(reordered, positional...)
-
 	fs := flag.NewFlagSet("protocol check", flag.ExitOnError)
 	exempt := fs.String("exempt", "", "check name to exempt")
 	reason := fs.String("reason", "", "reason for exemption (required with --exempt)")
-	fs.Parse(reordered)
+	fs.Parse(reorderArgs(args))
 
 	if fs.NArg() < 1 {
 		fmt.Fprintln(os.Stderr, "usage: conctl protocol check <contract-id> [--exempt <check> --reason <reason>]")

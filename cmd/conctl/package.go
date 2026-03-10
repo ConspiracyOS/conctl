@@ -14,6 +14,24 @@ import (
 
 var validPackageName = regexp.MustCompile(`^[a-z0-9][a-z0-9.+\-]+$`)
 
+// reorderArgs moves flags before positional args so flag.Parse works
+// regardless of argument order (e.g., "bc --agent concierge" → "--agent concierge bc").
+func reorderArgs(args []string) []string {
+	var flags, positional []string
+	for i := 0; i < len(args); i++ {
+		if strings.HasPrefix(args[i], "-") {
+			flags = append(flags, args[i])
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				flags = append(flags, args[i+1])
+				i++
+			}
+		} else {
+			positional = append(positional, args[i])
+		}
+	}
+	return append(flags, positional...)
+}
+
 func runPackage(args []string) {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "usage: conctl package <install|remove|list> [args]")
@@ -37,7 +55,7 @@ func runPackageInstall(args []string) {
 	fs := flag.NewFlagSet("package install", flag.ExitOnError)
 	agent := fs.String("agent", "", "agent the package is for (required)")
 	save := fs.Bool("save", false, "persist to conos.toml")
-	fs.Parse(args)
+	fs.Parse(reorderArgs(args))
 
 	if fs.NArg() < 1 || *agent == "" {
 		fmt.Fprintln(os.Stderr, "usage: conctl package install <package> --agent <name> [--save]")
@@ -77,7 +95,7 @@ func runPackageRemove(args []string) {
 	fs := flag.NewFlagSet("package remove", flag.ExitOnError)
 	agent := fs.String("agent", "", "agent the package was for")
 	save := fs.Bool("save", false, "remove from conos.toml")
-	fs.Parse(args)
+	fs.Parse(reorderArgs(args))
 
 	if fs.NArg() < 1 {
 		fmt.Fprintln(os.Stderr, "usage: conctl package remove <package> [--agent <name>] [--save]")
@@ -112,7 +130,7 @@ func runPackageRemove(args []string) {
 func runPackageList(args []string) {
 	fs := flag.NewFlagSet("package list", flag.ExitOnError)
 	agent := fs.String("agent", "", "show packages for a specific agent")
-	fs.Parse(args)
+	fs.Parse(reorderArgs(args))
 
 	cfg := loadConfig()
 
