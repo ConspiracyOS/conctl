@@ -22,17 +22,67 @@ type Finding struct {
 func VerifyLocal(m Manifest) []Finding {
 	var findings []Finding
 
+	// Build ACL mask map: paths with ACLs will have inflated group bits in stat
+	// because POSIX ACL mask replaces the traditional group permission bits.
+	aclMask := aclMaskForPaths(m.ACLs)
+
 	// Verify directories
 	for _, d := range m.Directories {
-		findings = append(findings, verifyPath(d.Path, d.Mode, d.Owner, d.Group, "directory")...)
+		mode := effectiveMode(d.Mode, aclMask[d.Path])
+		findings = append(findings, verifyPath(d.Path, mode, d.Owner, d.Group, "directory")...)
 	}
 
 	// Verify files
 	for _, f := range m.Files {
-		findings = append(findings, verifyPath(f.Path, f.Mode, f.Owner, f.Group, "file")...)
+		mode := effectiveMode(f.Mode, aclMask[f.Path])
+		findings = append(findings, verifyPath(f.Path, mode, f.Owner, f.Group, "file")...)
 	}
 
 	return findings
+}
+
+// aclMaskForPaths computes the highest ACL permission bits per path.
+// When setfacl adds group ACLs, the ACL mask (shown as group bits in stat)
+// becomes the union of all ACL entries.
+func aclMaskForPaths(acls []ACL) map[string]uint32 {
+	masks := make(map[string]uint32)
+	for _, a := range acls {
+		if a.Default {
+			continue // default ACLs don't affect the directory's own mode
+		}
+		var bits uint32
+		if strings.Contains(a.Perms, "r") {
+			bits |= 4
+		}
+		if strings.Contains(a.Perms, "w") {
+			bits |= 2
+		}
+		if strings.Contains(a.Perms, "x") {
+			bits |= 1
+		}
+		if bits > masks[a.Path] {
+			masks[a.Path] = bits
+		}
+	}
+	return masks
+}
+
+// effectiveMode adjusts the expected mode to account for ACL mask inflation.
+// With ACLs, stat's group bits reflect the ACL mask, not the owning group.
+func effectiveMode(baseMode string, aclGroupBits uint32) string {
+	if aclGroupBits == 0 {
+		return baseMode
+	}
+	mode, err := strconv.ParseUint(baseMode, 8, 32)
+	if err != nil {
+		return baseMode
+	}
+	// Replace group bits (middle octal digit) with the ACL mask
+	existingGroup := uint32((mode >> 3) & 7)
+	if aclGroupBits > existingGroup {
+		mode = (mode &^ (7 << 3)) | (uint64(aclGroupBits) << 3)
+	}
+	return fmt.Sprintf("%o", mode)
 }
 
 func verifyPath(path, expectedMode, expectedOwner, expectedGroup, category string) []Finding {
