@@ -84,17 +84,26 @@ func BuildPicoConfig(agent conconfig.AgentConfig, workspace string) *pcconfig.Co
 		if apiKey == "" {
 			apiKey = os.Getenv("CONOS_OPENROUTER_API_KEY")
 		}
-		cfg.Providers.OpenRouter = pcconfig.ProviderConfig{APIKey: apiKey}
+		cfg.Providers.OpenRouter = pcconfig.ProviderConfig{APIKey: apiKey, APIBase: agent.APIBase}
 	case "anthropic":
 		if apiKey == "" {
 			apiKey = os.Getenv("CONOS_AUTH_ANTHROPIC")
 		}
-		cfg.Providers.Anthropic = pcconfig.ProviderConfig{APIKey: apiKey}
+		cfg.Providers.Anthropic = pcconfig.ProviderConfig{APIKey: apiKey, APIBase: agent.APIBase}
 	case "openai":
 		if apiKey == "" {
 			apiKey = os.Getenv("CONOS_AUTH_OPENAI")
 		}
-		cfg.Providers.OpenAI = pcconfig.ProviderConfig{APIKey: apiKey}
+		cfg.Providers.OpenAI = pcconfig.ProviderConfig{APIKey: apiKey, APIBase: agent.APIBase}
+	case "ollama":
+		if apiKey == "" {
+			apiKey = "ollama" // Ollama doesn't require auth but PicoClaw needs a non-empty key
+		}
+		base := agent.APIBase
+		if base == "" {
+			base = "http://localhost:11434/v1"
+		}
+		cfg.Providers.Ollama = pcconfig.ProviderConfig{APIKey: apiKey, APIBase: base}
 	default:
 		// No provider specified or unknown — try legacy env var cascade
 		if key := os.Getenv("CONOS_OPENROUTER_API_KEY"); key != "" {

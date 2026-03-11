@@ -42,6 +42,7 @@ type BaseConfig struct {
 	Provider  string `toml:"provider"`
 	Model     string `toml:"model"`
 	APIKeyEnv string `toml:"api_key_env"`
+	APIBase   string `toml:"api_base"` // override provider endpoint (e.g. http://host.docker.internal:11434/v1 for Ollama)
 
 	Officer TierConfig `toml:"officer"`
 	Worker  TierConfig `toml:"worker"`
@@ -57,6 +58,7 @@ type TierConfig struct {
 	Provider  string `toml:"provider"`
 	Model     string `toml:"model"`
 	APIKeyEnv string `toml:"api_key_env"`
+	APIBase   string `toml:"api_base"`
 }
 
 type NetworkConfig struct {
@@ -98,6 +100,7 @@ type AgentConfig struct {
 	Provider     string   `toml:"provider"`
 	Model        string   `toml:"model"`
 	APIKeyEnv    string   `toml:"api_key_env"`
+	APIBase      string   `toml:"api_base"`
 	MaxSessions  int      `toml:"max_sessions"`
 	Instructions string   `toml:"instructions"`
 	Packages     []string `toml:"packages"` // apt packages to install for this agent
@@ -125,6 +128,9 @@ func (c *Config) ResolvedAgent(name string) AgentConfig {
 			}
 			if resolved.APIKeyEnv == "" {
 				resolved.APIKeyEnv = strutil.FirstNonEmpty(tier.APIKeyEnv, c.Base.APIKeyEnv)
+			}
+			if resolved.APIBase == "" {
+				resolved.APIBase = strutil.FirstNonEmpty(tier.APIBase, c.Base.APIBase)
 			}
 
 			// Claude Code OAuth tokens only work with the Claude Code CLI.

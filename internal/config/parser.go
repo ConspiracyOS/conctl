@@ -165,7 +165,7 @@ func validatePicoClawProvider(agentName, runner, provider string) error {
 		return nil
 	}
 	validProviders := map[string]bool{
-		"openrouter": true, "anthropic": true, "openai": true, "": true,
+		"openrouter": true, "anthropic": true, "openai": true, "ollama": true, "": true,
 	}
 	if !validProviders[provider] {
 		return fmt.Errorf("agent %q: picoclaw does not support provider %q (use openrouter/anthropic/openai)", agentName, provider)
