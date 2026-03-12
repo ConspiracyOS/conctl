@@ -49,7 +49,7 @@ func TestServiceHardeningWorker(t *testing.T) {
 	units := GenerateUnits(agent)
 	svc := units["conos-researcher.service"]
 
-	// Workers get full hardening
+	// Workers get full hardening including syscall filtering
 	for _, directive := range []string{
 		"NoNewPrivileges=yes",
 		"ProtectSystem=strict",
@@ -57,6 +57,9 @@ func TestServiceHardeningWorker(t *testing.T) {
 		"PrivateDevices=yes",
 		"ProtectHome=tmpfs",
 		"UMask=0077",
+		"SystemCallFilter=@system-service",
+		"SystemCallFilter=~@mount",
+		"SystemCallErrorNumber=EPERM",
 	} {
 		if !strings.Contains(svc, directive) {
 			t.Errorf("worker service should contain %s", directive)
@@ -75,12 +78,15 @@ func TestServiceHardeningSysadmin(t *testing.T) {
 	units := GenerateUnits(agent)
 	svc := units["conos-sysadmin.service"]
 
-	// Sysadmin needs sudo — no NoNewPrivileges or ProtectSystem=strict
+	// Sysadmin needs sudo — no NoNewPrivileges, ProtectSystem, or syscall filter
 	if strings.Contains(svc, "NoNewPrivileges=yes") {
 		t.Error("sysadmin service must NOT have NoNewPrivileges (breaks sudo)")
 	}
 	if strings.Contains(svc, "ProtectSystem=strict") {
 		t.Error("sysadmin service must NOT have ProtectSystem=strict (breaks sudo writes to /etc)")
+	}
+	if strings.Contains(svc, "SystemCallFilter=") {
+		t.Error("sysadmin service must NOT have SystemCallFilter (needs broad syscall access for sudo)")
 	}
 
 	// But should still have other hardening
@@ -91,6 +97,28 @@ func TestServiceHardeningSysadmin(t *testing.T) {
 	} {
 		if !strings.Contains(svc, directive) {
 			t.Errorf("sysadmin service should still contain %s", directive)
+		}
+	}
+}
+
+func TestServiceHardeningOperatorSyscalls(t *testing.T) {
+	agent := config.AgentConfig{
+		Name: "concierge",
+		Tier: "operator",
+		Mode: "on-demand",
+	}
+
+	units := GenerateUnits(agent)
+	svc := units["conos-concierge.service"]
+
+	// Operators get syscall filtering (same as workers)
+	for _, directive := range []string{
+		"SystemCallFilter=@system-service",
+		"SystemCallFilter=~@mount",
+		"SystemCallErrorNumber=EPERM",
+	} {
+		if !strings.Contains(svc, directive) {
+			t.Errorf("operator service should contain %s", directive)
 		}
 	}
 }

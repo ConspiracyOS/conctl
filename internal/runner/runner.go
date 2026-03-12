@@ -299,9 +299,17 @@ func RunWithRuntime(agentName string, cfg *config.Config, dirs Dirs, rt conrunti
 	// 4. Invoke runtime
 	sessionKey := fmt.Sprintf("conos:%s", agentName)
 	ctx := context.Background()
+	startTime := time.Now()
 	output, err := rt.Invoke(ctx, prompt, sessionKey)
+	duration := time.Since(startTime)
+	outcome := "ok"
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "agent runtime error: %v\n", err)
+		if output == "" {
+			outcome = "error"
+		} else {
+			outcome = "partial" // got output despite error (e.g. timeout with partial response)
+		}
 		if output == "" {
 			return fmt.Errorf("runtime returned no output: %w", err)
 		}
@@ -309,8 +317,9 @@ func RunWithRuntime(agentName string, cfg *config.Config, dirs Dirs, rt conrunti
 
 	// 5. Write ledger entry (append-only cost/activity log)
 	now := time.Now()
-	ledgerLine := fmt.Sprintf("%s\t%s\t%s\t%s\t%s\n",
-		now.Format(time.RFC3339), agentName, agent.Model, filepath.Base(task.Path), task.Trust)
+	ledgerLine := fmt.Sprintf("%s\t%s\t%s\t%s\t%s\t%s\t%d\n",
+		now.Format(time.RFC3339), agentName, agent.Model, filepath.Base(task.Path),
+		task.Trust, duration.Truncate(time.Second), len(output))
 	ledgerPath := filepath.Join(dirs.StateBase, "ledger", now.Format("2006-01-02")+".tsv")
 	if lf, lerr := os.OpenFile(ledgerPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); lerr == nil {
 		lf.WriteString(ledgerLine)
@@ -318,8 +327,9 @@ func RunWithRuntime(agentName string, cfg *config.Config, dirs Dirs, rt conrunti
 	}
 
 	// 6. Write audit log
-	auditLine := fmt.Sprintf("%s [%s] run: processed %s [trust:%s]\n",
-		now.Format(time.RFC3339), agentName, filepath.Base(task.Path), task.Trust)
+	auditLine := fmt.Sprintf("%s [%s] run: processed %s [trust:%s] [%s] [%s] [%d chars]\n",
+		now.Format(time.RFC3339), agentName, filepath.Base(task.Path),
+		task.Trust, outcome, duration.Truncate(time.Second), len(output))
 	auditPath := filepath.Join(dirs.StateBase, "logs", "audit", now.Format("2006-01-02")+".log")
 	f, err := os.OpenFile(auditPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err == nil {

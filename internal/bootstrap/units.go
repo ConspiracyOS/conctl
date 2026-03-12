@@ -78,8 +78,19 @@ BindPaths=/srv/conos/agents/%s
 UMask=0077
 `, user, agent.Name)
 
+	// Syscall filter: @system-service is the systemd-recommended baseline for
+	// normal services. We deny groups that agents should never need: kernel
+	// module loading, mount manipulation, clock changes, raw I/O, reboot, swap,
+	// and obsolete/debug syscalls. Sysadmin is excluded — it needs sudo which
+	// requires broader syscall access.
+	const syscallFilter = `SystemCallFilter=@system-service
+SystemCallFilter=~@mount @clock @module @reboot @swap @raw-io @cpu-emulation @debug @obsolete
+SystemCallErrorNumber=EPERM
+`
+
 	if hasSudo(agent) {
 		// Sysadmin: broad write access for commissioning, config, systemd units.
+		// No syscall filter — needs sudo and broad system access.
 		base += `ReadWritePaths=/srv/conos/agents
 ReadWritePaths=/srv/conos/config
 ReadWritePaths=/srv/conos/contracts
@@ -97,7 +108,7 @@ ReadWritePaths=/etc/systemd/system
 		base += `BindReadOnlyPaths=/srv/conos/agents
 NoNewPrivileges=yes
 ProtectSystem=strict
-`
+` + syscallFilter
 	} else {
 		// Officers and operators: read-only root, but can write to agent inboxes
 		// (for routing/delegation), produce artifacts, and write audit logs.
@@ -109,7 +120,7 @@ ReadWritePaths=/srv/conos/artifacts
 ReadWritePaths=/srv/conos/logs/audit
 ReadWritePaths=/srv/conos/policy
 ReadWritePaths=/srv/conos/ledger
-`
+` + syscallFilter
 	}
 	return base
 }
