@@ -103,7 +103,8 @@ type AgentConfig struct {
 	APIBase      string   `toml:"api_base"`
 	MaxSessions  int      `toml:"max_sessions"`
 	Instructions string   `toml:"instructions"`
-	Packages     []string `toml:"packages"` // apt packages to install for this agent
+	Packages     []string `toml:"packages"`      // apt packages to install for this agent
+	AllowedPorts []int    `toml:"allowed_ports"` // outbound TCP ports (nftables allowlist, empty = deny all)
 }
 
 // ResolvedAgent returns an AgentConfig with base and tier defaults applied.

@@ -288,6 +288,24 @@ chown -R root:agents /srv/conos/.git && chmod -R g+w /srv/conos/.git`,
 		SetupCommand{Description: "enable auditd", Cmd: "systemctl enable --now auditd 2>/dev/null || true"},
 	)
 
+	// nftables: per-agent outbound filtering
+	if nftRules := GenerateNftRules(cfg); nftRules != "" {
+		m.SetupCommands = append(m.SetupCommands,
+			SetupCommand{
+				Description: "write nftables rules",
+				Cmd:         fmt.Sprintf("cat > /etc/nftables.conf << 'NFTEOF'\n%sNFTEOF", nftRules),
+			},
+			SetupCommand{
+				Description: "apply nftables rules",
+				Cmd:         "nft -f /etc/nftables.conf",
+			},
+			SetupCommand{
+				Description: "enable nftables",
+				Cmd:         "systemctl enable nftables 2>/dev/null || true",
+			},
+		)
+	}
+
 	// Tailscale
 	if cfg.Infra.TailscaleHostname != "" {
 		loginServerFlag := ""
