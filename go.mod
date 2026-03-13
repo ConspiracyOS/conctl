@@ -9,7 +9,6 @@ require (
 	gopkg.in/yaml.v3 v3.0.1
 )
 
-
 require (
 	github.com/adhocore/gronx v1.19.6 // indirect
 	github.com/andybalholm/brotli v1.2.0 // indirect
