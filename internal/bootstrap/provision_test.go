@@ -226,6 +226,66 @@ func TestProvisionFromManifest_SystemdUnits(t *testing.T) {
 	t.Error("expected systemd unit write command")
 }
 
+func TestProvisionFromManifest_DirRootOwnerNonRootGroup(t *testing.T) {
+	m := Manifest{
+		Directories: []Directory{
+			{Path: "/srv/conos/inbox", Mode: "770", Owner: "root", Group: "agents"},
+		},
+	}
+	cmds := ProvisionFromManifest(m)
+
+	for _, c := range cmds {
+		if strings.Contains(c, "install -d -o root -g agents -m 770") {
+			return
+		}
+	}
+	t.Error("root-owned dir with non-root group should use install -d -o -g -m")
+}
+
+func TestProvisionFromManifest_ACLNoUserNoGroup(t *testing.T) {
+	m := Manifest{
+		ACLs: []ACL{
+			{Path: "/srv/test", Perms: "rwx"}, // neither user nor group
+		},
+	}
+	cmds := ProvisionFromManifest(m)
+
+	for _, c := range cmds {
+		if strings.Contains(c, "setfacl") {
+			t.Error("ACL with neither user nor group should not generate a setfacl command")
+		}
+	}
+}
+
+func TestProvisionFromManifest_MultipleSetupCommands(t *testing.T) {
+	m := Manifest{
+		SetupCommands: []SetupCommand{
+			{Description: "first", Cmd: "echo first"},
+			{Description: "second", Cmd: "echo second"},
+			{Description: "third", Cmd: "echo third"},
+		},
+	}
+	cmds := ProvisionFromManifest(m)
+
+	if len(cmds) != 3 {
+		t.Errorf("expected 3 commands, got %d", len(cmds))
+	}
+	// Verify order preserved
+	firstIdx := -1
+	thirdIdx := -1
+	for i, c := range cmds {
+		if c == "echo first" {
+			firstIdx = i
+		}
+		if c == "echo third" {
+			thirdIdx = i
+		}
+	}
+	if firstIdx > thirdIdx {
+		t.Error("setup commands must preserve order")
+	}
+}
+
 func TestProvisionFromManifest_Ordering(t *testing.T) {
 	// Full manifest: verify groups → files → users → dirs → ACLs → units → setup
 	m := Manifest{

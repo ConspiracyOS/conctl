@@ -106,6 +106,67 @@ func TestGenerateNftRules_StrictMultipleAgents(t *testing.T) {
 	}
 }
 
+func TestGenerateNftRules_StrictAgentNoPortsGetsDenyOnly(t *testing.T) {
+	cfg := &config.Config{
+		Network: config.NetworkConfig{OutboundFilter: "strict"},
+		Agents: []config.AgentConfig{
+			{Name: "researcher"}, // no AllowedPorts
+		},
+	}
+	rules := GenerateNftRules(cfg)
+
+	// Should NOT have an allow rule for researcher
+	if strings.Contains(rules, `meta skuid "a-researcher" tcp dport`) {
+		t.Error("agent with no allowed ports should not have a port allow rule")
+	}
+
+	// Should still have a deny rule
+	if !strings.Contains(rules, `meta skuid "a-researcher" counter drop`) {
+		t.Error("agent with no allowed ports should still have a deny rule")
+	}
+}
+
+func TestGenerateNftRules_RuleOrdering(t *testing.T) {
+	cfg := &config.Config{
+		Network: config.NetworkConfig{OutboundFilter: "strict"},
+		Agents: []config.AgentConfig{
+			{Name: "concierge", AllowedPorts: []int{443}},
+		},
+	}
+	rules := GenerateNftRules(cfg)
+
+	loIdx := strings.Index(rules, `oifname "lo"`)
+	estIdx := strings.Index(rules, "ct state established")
+	allowIdx := strings.Index(rules, "tcp dport")
+	denyIdx := strings.Index(rules, "counter drop")
+
+	if loIdx == -1 || estIdx == -1 || allowIdx == -1 || denyIdx == -1 {
+		t.Fatal("missing expected rule sections")
+	}
+	if loIdx > estIdx {
+		t.Error("loopback must come before established")
+	}
+	if estIdx > allowIdx {
+		t.Error("established must come before per-agent allows")
+	}
+	if allowIdx > denyIdx {
+		t.Error("per-agent allows must come before deny")
+	}
+}
+
+func TestGenerateNftRules_PolicyAccept(t *testing.T) {
+	cfg := &config.Config{
+		Network: config.NetworkConfig{OutboundFilter: "strict"},
+		Agents:  []config.AgentConfig{{Name: "test"}},
+	}
+	rules := GenerateNftRules(cfg)
+
+	// Default policy must be accept (non-agent traffic should pass)
+	if !strings.Contains(rules, "policy accept") {
+		t.Error("chain policy must be accept (only agent UIDs are filtered)")
+	}
+}
+
 func TestFormatPorts_Single(t *testing.T) {
 	if got := formatPorts([]int{443}); got != "443" {
 		t.Errorf("expected 443, got %s", got)
