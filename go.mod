@@ -4,12 +4,11 @@ go 1.25.7
 
 require (
 	github.com/BurntSushi/toml v1.6.0
-	github.com/ConspiracyOS/contracts v0.0.0
+	github.com/ConspiracyOS/contracts v0.0.1
 	github.com/sipeed/picoclaw v0.1.2
 	gopkg.in/yaml.v3 v3.0.1
 )
 
-replace github.com/ConspiracyOS/contracts => ../contract
 
 require (
 	github.com/adhocore/gronx v1.19.6 // indirect
