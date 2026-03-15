@@ -297,6 +297,152 @@ func TestParseSimpleEnvFile(t *testing.T) {
 	}
 }
 
+func TestParseSimpleEnvFile_CommentsAndBlanks(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "env")
+	content := "# full line comment\n\n  # indented comment\n  \nKEY=val\n"
+	os.WriteFile(f, []byte(content), 0644)
+	env := parseSimpleEnvFile(f)
+	if len(env) != 1 {
+		t.Fatalf("expected 1 entry, got %d: %v", len(env), env)
+	}
+	if env["KEY"] != "val" {
+		t.Fatalf("expected KEY=val, got %q", env["KEY"])
+	}
+}
+
+func TestParseSimpleEnvFile_NoEquals(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "env")
+	content := "NOEQUALSSIGN\nGOOD=value\nALSOBAD\n"
+	os.WriteFile(f, []byte(content), 0644)
+	env := parseSimpleEnvFile(f)
+	if len(env) != 1 {
+		t.Fatalf("expected 1 entry, got %d: %v", len(env), env)
+	}
+	if env["GOOD"] != "value" {
+		t.Fatalf("expected GOOD=value, got %q", env["GOOD"])
+	}
+}
+
+func TestParseSimpleEnvFile_EqualsInValue(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "env")
+	content := "TOKEN=abc=def=ghi\n"
+	os.WriteFile(f, []byte(content), 0644)
+	env := parseSimpleEnvFile(f)
+	if env["TOKEN"] != "abc=def=ghi" {
+		t.Fatalf("expected value with equals signs preserved, got %q", env["TOKEN"])
+	}
+}
+
+func TestParseSimpleEnvFile_NonexistentFile(t *testing.T) {
+	env := parseSimpleEnvFile("/nonexistent/path/env")
+	if len(env) != 0 {
+		t.Fatalf("expected empty map for nonexistent file, got %v", env)
+	}
+}
+
+func TestParseSimpleEnvFile_EmptyPath(t *testing.T) {
+	env := parseSimpleEnvFile("")
+	if len(env) != 0 {
+		t.Fatalf("expected empty map for empty path, got %v", env)
+	}
+}
+
+func writeMinimalConfig(t *testing.T, dir string) string {
+	t.Helper()
+	p := filepath.Join(dir, "conos.toml")
+	content := `[base]
+provider = "anthropic"
+runner = "picoclaw"
+api_key_env = "CONOS_API_KEY"
+
+[[agents]]
+name = "concierge"
+tier = "operator"
+`
+	if err := os.WriteFile(p, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestAuthPreflightWarnings_EmptyConfigPath(t *testing.T) {
+	warnings := authPreflightWarnings("", "/some/env")
+	if warnings != nil {
+		t.Fatalf("expected nil for empty config path, got %v", warnings)
+	}
+}
+
+func TestAuthPreflightWarnings_NonexistentConfig(t *testing.T) {
+	warnings := authPreflightWarnings("/nonexistent/conos.toml", "")
+	if warnings != nil {
+		t.Fatalf("expected nil for nonexistent config, got %v", warnings)
+	}
+}
+
+func TestAuthPreflightWarnings_ValidConfigWithAPIKey(t *testing.T) {
+	dir := t.TempDir()
+	configPath := writeMinimalConfig(t, dir)
+
+	envFile := filepath.Join(dir, "env")
+	os.WriteFile(envFile, []byte("CONOS_API_KEY=sk-ant-api03-realkey\n"), 0644)
+
+	warnings := authPreflightWarnings(configPath, envFile)
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings with valid API key, got %v", warnings)
+	}
+}
+
+func TestAuthPreflightWarnings_OAuthToken(t *testing.T) {
+	dir := t.TempDir()
+	configPath := writeMinimalConfig(t, dir)
+
+	envFile := filepath.Join(dir, "env")
+	os.WriteFile(envFile, []byte("CONOS_API_KEY=sk-ant-oat01-oauthtoken\n"), 0644)
+
+	warnings := authPreflightWarnings(configPath, envFile)
+	if len(warnings) != 1 {
+		t.Fatalf("expected 1 OAuth warning, got %d: %v", len(warnings), warnings)
+	}
+	if !strings.Contains(warnings[0], "OAuth token") {
+		t.Fatalf("expected OAuth warning, got: %s", warnings[0])
+	}
+}
+
+func TestAuthPreflightWarnings_MissingKeyNoEnvFile(t *testing.T) {
+	dir := t.TempDir()
+	configPath := writeMinimalConfig(t, dir)
+
+	// Unset the env vars that collectAuthWarnings checks, in case they're
+	// set in the test runner's environment.
+	t.Setenv("CONOS_API_KEY", "")
+	t.Setenv("CONOS_AUTH_ANTHROPIC", "")
+
+	warnings := authPreflightWarnings(configPath, "")
+	if len(warnings) != 1 {
+		t.Fatalf("expected 1 missing-key warning, got %d: %v", len(warnings), warnings)
+	}
+	if !strings.Contains(warnings[0], "missing Anthropic credential") {
+		t.Fatalf("expected missing key warning, got: %s", warnings[0])
+	}
+}
+
+func TestAuthPreflightWarnings_NonexistentEnvPath(t *testing.T) {
+	dir := t.TempDir()
+	configPath := writeMinimalConfig(t, dir)
+
+	t.Setenv("CONOS_API_KEY", "")
+	t.Setenv("CONOS_AUTH_ANTHROPIC", "")
+
+	// Non-existent env path should not cause an error; parseSimpleEnvFile returns empty map.
+	warnings := authPreflightWarnings(configPath, "/nonexistent/env")
+	if len(warnings) != 1 {
+		t.Fatalf("expected 1 missing-key warning (env file missing), got %d: %v", len(warnings), warnings)
+	}
+	if !strings.Contains(warnings[0], "missing Anthropic credential") {
+		t.Fatalf("expected missing key warning, got: %s", warnings[0])
+	}
+}
+
 func TestRunAgentLoop_DrainInbox(t *testing.T) {
 	agentName := "test-agent"
 	stateBase := t.TempDir()
