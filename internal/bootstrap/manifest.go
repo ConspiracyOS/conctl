@@ -64,8 +64,21 @@ type SetupCommand struct {
 	Cmd         string `yaml:"cmd"`
 }
 
+// BootstrapMode controls how bootstrap applies system state.
+type BootstrapMode int
+
+const (
+	ModeContainer BootstrapMode = iota // default: owns the entire OS
+	ModeSidecar                        // coexists with an existing OS
+)
+
+// BootstrapOptions configures bootstrap behavior independent of system config.
+type BootstrapOptions struct {
+	Mode BootstrapMode
+}
+
 // FromConfig generates a Manifest from the current config.
-func FromConfig(cfg *config.Config) Manifest {
+func FromConfig(cfg *config.Config, opts BootstrapOptions) Manifest {
 	var m Manifest
 
 	// Groups
@@ -250,10 +263,14 @@ EnvironmentFile=-/etc/conos/env
 	}
 
 	// Sudoers
+	validateCmd := "visudo -c || echo 'warn: sudoers validation failed'"
+	if opts.Mode == ModeSidecar {
+		validateCmd = "visudo -c || exit 1"
+	}
 	m.SetupCommands = append(m.SetupCommands,
 		SetupCommand{Description: "install sudoers", Cmd: "cp /etc/conos/sudoers.d/* /etc/sudoers.d/ 2>/dev/null || true"},
 		SetupCommand{Description: "fix sudoers perms", Cmd: "chmod 440 /etc/sudoers.d/conos-* 2>/dev/null || true"},
-		SetupCommand{Description: "validate sudoers", Cmd: "visudo -c || echo 'warn: sudoers validation failed'"},
+		SetupCommand{Description: "validate sudoers", Cmd: validateCmd},
 	)
 
 	// Copy system contracts
@@ -290,20 +307,36 @@ chown -R root:agents /srv/conos/.git && chmod -R g+w /srv/conos/.git`,
 
 	// nftables: per-agent outbound filtering
 	if nftRules := GenerateNftRules(cfg); nftRules != "" {
-		m.SetupCommands = append(m.SetupCommands,
-			SetupCommand{
-				Description: "write nftables rules",
-				Cmd:         fmt.Sprintf("cat > /etc/nftables.conf << 'NFTEOF'\n%sNFTEOF", nftRules),
-			},
-			SetupCommand{
-				Description: "apply nftables rules",
-				Cmd:         "nft -f /etc/nftables.conf",
-			},
-			SetupCommand{
-				Description: "enable nftables",
-				Cmd:         "systemctl enable nftables 2>/dev/null || true",
-			},
-		)
+		if opts.Mode == ModeSidecar {
+			// Sidecar: write to conos-owned file and load additively.
+			// The generated rules use a self-contained "table inet conos"
+			// so they don't interfere with existing firewall rules.
+			m.SetupCommands = append(m.SetupCommands,
+				SetupCommand{
+					Description: "write nftables rules",
+					Cmd:         fmt.Sprintf("cat > /etc/conos/nftables.conf << 'NFTEOF'\n%sNFTEOF", nftRules),
+				},
+				SetupCommand{
+					Description: "apply nftables rules (additive)",
+					Cmd:         "nft -f /etc/conos/nftables.conf",
+				},
+			)
+		} else {
+			m.SetupCommands = append(m.SetupCommands,
+				SetupCommand{
+					Description: "write nftables rules",
+					Cmd:         fmt.Sprintf("cat > /etc/nftables.conf << 'NFTEOF'\n%sNFTEOF", nftRules),
+				},
+				SetupCommand{
+					Description: "apply nftables rules",
+					Cmd:         "nft -f /etc/nftables.conf",
+				},
+				SetupCommand{
+					Description: "enable nftables",
+					Cmd:         "systemctl enable nftables 2>/dev/null || true",
+				},
+			)
+		}
 	}
 
 	// Tailscale
@@ -427,10 +460,17 @@ fi`,
 				unique = append(unique, p)
 			}
 		}
-		m.SetupCommands = append(m.SetupCommands, SetupCommand{
-			Description: "install agent packages",
-			Cmd:         fmt.Sprintf("apt-get install -y --no-install-recommends %s", strings.Join(unique, " ")),
-		})
+		if opts.Mode == ModeSidecar {
+			m.SetupCommands = append(m.SetupCommands, SetupCommand{
+				Description: "list required packages",
+				Cmd:         fmt.Sprintf("echo 'sidecar: install these packages manually: %s'", strings.Join(unique, " ")),
+			})
+		} else {
+			m.SetupCommands = append(m.SetupCommands, SetupCommand{
+				Description: "install agent packages",
+				Cmd:         fmt.Sprintf("apt-get install -y --no-install-recommends %s", strings.Join(unique, " ")),
+			})
+		}
 	}
 
 	// AGENTS.md ownership fix and skill deployment for each agent
@@ -461,6 +501,10 @@ fi`,
 
 	// Immutable bit on critical files — last step after all provisioning.
 	// chattr +i prevents modification even by root without CAP_LINUX_IMMUTABLE.
+	// Skipped in sidecar mode to avoid surprising the host admin.
+	if opts.Mode == ModeSidecar {
+		return m
+	}
 	m.SetupCommands = append(m.SetupCommands,
 		SetupCommand{Description: "immutable: config", Cmd: "chattr +i /etc/conos/conos.toml 2>/dev/null || true"},
 		SetupCommand{Description: "immutable: env", Cmd: "chattr +i /etc/conos/env 2>/dev/null || true"},

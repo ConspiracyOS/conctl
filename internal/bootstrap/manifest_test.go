@@ -69,7 +69,7 @@ func TestFromConfig_Groups(t *testing.T) {
 			{Name: "sysadmin", Tier: "operator"},
 		},
 	}
-	m := FromConfig(cfg)
+	m := FromConfig(cfg, BootstrapOptions{})
 
 	names := map[string]bool{}
 	for _, g := range m.Groups {
@@ -89,7 +89,7 @@ func TestFromConfig_Users(t *testing.T) {
 			{Name: "ceo", Tier: "officer"},
 		},
 	}
-	m := FromConfig(cfg)
+	m := FromConfig(cfg, BootstrapOptions{})
 
 	users := map[string]User{}
 	for _, u := range m.Users {
@@ -124,7 +124,7 @@ func TestFromConfig_Directories(t *testing.T) {
 			{Name: "concierge", Tier: "operator"},
 		},
 	}
-	m := FromConfig(cfg)
+	m := FromConfig(cfg, BootstrapOptions{})
 
 	paths := map[string]Directory{}
 	for _, d := range m.Directories {
@@ -153,7 +153,7 @@ func TestFromConfig_ACLs(t *testing.T) {
 			{Name: "sysadmin", Tier: "operator"},
 		},
 	}
-	m := FromConfig(cfg)
+	m := FromConfig(cfg, BootstrapOptions{})
 
 	found := false
 	for _, acl := range m.ACLs {
@@ -174,7 +174,7 @@ func TestFromConfig_ACLs_OfficerCanTaskAll(t *testing.T) {
 			{Name: "researcher", Tier: "worker"},
 		},
 	}
-	m := FromConfig(cfg)
+	m := FromConfig(cfg, BootstrapOptions{})
 
 	targets := map[string]bool{"concierge": false, "researcher": false}
 	for _, acl := range m.ACLs {
@@ -200,7 +200,7 @@ func TestFromConfig_ACLs_WorkerCannotTask(t *testing.T) {
 			{Name: "researcher", Tier: "worker"},
 		},
 	}
-	m := FromConfig(cfg)
+	m := FromConfig(cfg, BootstrapOptions{})
 
 	for _, acl := range m.ACLs {
 		if acl.User == "a-researcher" && strings.Contains(acl.Path, "/inbox") {
@@ -218,7 +218,7 @@ func TestFromConfig_ACLs_OperatorCanTaskAnyAgent(t *testing.T) {
 			{Name: "researcher", Tier: "worker"},
 		},
 	}
-	m := FromConfig(cfg)
+	m := FromConfig(cfg, BootstrapOptions{})
 
 	canTask := map[string]bool{}
 	for _, acl := range m.ACLs {
@@ -248,7 +248,7 @@ func TestFromConfig_ACLs_SysadminRoleGetsConfigAccess(t *testing.T) {
 			{Name: "concierge", Tier: "operator", Roles: []string{"router"}},
 		},
 	}
-	m := FromConfig(cfg)
+	m := FromConfig(cfg, BootstrapOptions{})
 
 	hasConfig := false
 	hasContracts := false
@@ -280,7 +280,7 @@ func TestFromConfig_ACLs_CannotTaskSelf(t *testing.T) {
 			{Name: "ceo", Tier: "officer"},
 		},
 	}
-	m := FromConfig(cfg)
+	m := FromConfig(cfg, BootstrapOptions{})
 
 	for _, acl := range m.ACLs {
 		if acl.User == "a-ceo" && strings.Contains(acl.Path, "/ceo/") {
@@ -295,7 +295,7 @@ func TestFromConfig_Files(t *testing.T) {
 			{Name: "concierge", Tier: "operator"},
 		},
 	}
-	m := FromConfig(cfg)
+	m := FromConfig(cfg, BootstrapOptions{})
 
 	paths := map[string]File{}
 	for _, f := range m.Files {
@@ -319,7 +319,7 @@ func TestFromConfig_Units(t *testing.T) {
 			{Name: "concierge", Tier: "operator", Mode: "on-demand"},
 		},
 	}
-	m := FromConfig(cfg)
+	m := FromConfig(cfg, BootstrapOptions{})
 
 	names := map[string]bool{}
 	for _, u := range m.Units {
@@ -350,7 +350,7 @@ func TestProvisionFromManifest_Groups(t *testing.T) {
 			{Name: "sysadmin", Tier: "operator", Mode: "on-demand"},
 		},
 	}
-	m := FromConfig(cfg)
+	m := FromConfig(cfg, BootstrapOptions{})
 	cmds := ProvisionFromManifest(m)
 
 	// Must create all groups
@@ -372,7 +372,7 @@ func TestProvisionFromManifest_Users(t *testing.T) {
 			{Name: "concierge", Tier: "operator", Mode: "on-demand"},
 		},
 	}
-	m := FromConfig(cfg)
+	m := FromConfig(cfg, BootstrapOptions{})
 	cmds := ProvisionFromManifest(m)
 
 	hasUser := false
@@ -393,7 +393,7 @@ func TestProvisionFromManifest_Dirs(t *testing.T) {
 			{Name: "concierge", Tier: "operator", Mode: "on-demand"},
 		},
 	}
-	m := FromConfig(cfg)
+	m := FromConfig(cfg, BootstrapOptions{})
 	cmds := ProvisionFromManifest(m)
 
 	hasInbox := false
@@ -415,7 +415,7 @@ func TestProvisionFromManifest_ACLs(t *testing.T) {
 			{Name: "sysadmin", Tier: "operator", Mode: "on-demand"},
 		},
 	}
-	m := FromConfig(cfg)
+	m := FromConfig(cfg, BootstrapOptions{})
 	cmds := ProvisionFromManifest(m)
 
 	hasACL := false
@@ -438,7 +438,7 @@ func TestProvisionFromManifest_Units(t *testing.T) {
 			{Name: "concierge", Tier: "operator", Mode: "on-demand"},
 		},
 	}
-	m := FromConfig(cfg)
+	m := FromConfig(cfg, BootstrapOptions{})
 	cmds := ProvisionFromManifest(m)
 
 	hasUnit := false
@@ -461,7 +461,7 @@ func TestFromConfig_SetupCommands_SSHKeys(t *testing.T) {
 			{Name: "concierge", Tier: "operator", Mode: "on-demand"},
 		},
 	}
-	m := FromConfig(cfg)
+	m := FromConfig(cfg, BootstrapOptions{})
 
 	hasSSH := false
 	for _, sc := range m.SetupCommands {
@@ -480,7 +480,7 @@ func TestFromConfig_SetupCommands_Sudoers(t *testing.T) {
 			{Name: "concierge", Tier: "operator", Mode: "on-demand"},
 		},
 	}
-	m := FromConfig(cfg)
+	m := FromConfig(cfg, BootstrapOptions{})
 
 	hasSudoers := false
 	for _, sc := range m.SetupCommands {
@@ -499,7 +499,7 @@ func TestFromConfig_SetupCommands_ContractsCopy(t *testing.T) {
 			{Name: "concierge", Tier: "operator", Mode: "on-demand"},
 		},
 	}
-	m := FromConfig(cfg)
+	m := FromConfig(cfg, BootstrapOptions{})
 
 	hasContracts := false
 	for _, sc := range m.SetupCommands {
@@ -518,7 +518,7 @@ func TestFromConfig_SetupCommands_GitInit(t *testing.T) {
 			{Name: "concierge", Tier: "operator", Mode: "on-demand"},
 		},
 	}
-	m := FromConfig(cfg)
+	m := FromConfig(cfg, BootstrapOptions{})
 
 	hasGit := false
 	for _, sc := range m.SetupCommands {
@@ -540,7 +540,7 @@ func TestFromConfig_SetupCommands_SSHKeyRejectsSpecialChars(t *testing.T) {
 			{Name: "concierge", Tier: "operator", Mode: "on-demand"},
 		},
 	}
-	m := FromConfig(cfg)
+	m := FromConfig(cfg, BootstrapOptions{})
 
 	hasValidKey := false
 	for _, sc := range m.SetupCommands {
@@ -582,7 +582,7 @@ func TestFromConfig_SetupCommands_Tailscale(t *testing.T) {
 		Infra:  config.InfraConfig{TailscaleHostname: "myhost"},
 		Agents: []config.AgentConfig{{Name: "concierge", Tier: "operator", Mode: "on-demand"}},
 	}
-	m := FromConfig(cfg)
+	m := FromConfig(cfg, BootstrapOptions{})
 	hasTailscale := false
 	for _, sc := range m.SetupCommands {
 		if strings.Contains(sc.Cmd, "tailscale") {
@@ -598,7 +598,7 @@ func TestFromConfig_SetupCommands_NoTailscale(t *testing.T) {
 	cfg := &config.Config{
 		Agents: []config.AgentConfig{{Name: "concierge", Tier: "operator", Mode: "on-demand"}},
 	}
-	m := FromConfig(cfg)
+	m := FromConfig(cfg, BootstrapOptions{})
 	for _, sc := range m.SetupCommands {
 		if strings.Contains(sc.Cmd, "tailscale up") {
 			t.Error("should not have Tailscale command when hostname empty")
@@ -611,7 +611,7 @@ func TestFromConfig_SetupCommands_Dashboard(t *testing.T) {
 		Dashboard: config.DashboardConfig{Enabled: true, Port: 8080, Bind: "127.0.0.1"},
 		Agents:    []config.AgentConfig{{Name: "concierge", Tier: "operator", Mode: "on-demand"}},
 	}
-	m := FromConfig(cfg)
+	m := FromConfig(cfg, BootstrapOptions{})
 	hasNginx := false
 	for _, sc := range m.SetupCommands {
 		if strings.Contains(sc.Cmd, "nginx") {
@@ -628,7 +628,7 @@ func TestFromConfig_SetupCommands_DashboardDisabled(t *testing.T) {
 		Dashboard: config.DashboardConfig{Enabled: false},
 		Agents:    []config.AgentConfig{{Name: "concierge", Tier: "operator", Mode: "on-demand"}},
 	}
-	m := FromConfig(cfg)
+	m := FromConfig(cfg, BootstrapOptions{})
 	for _, sc := range m.SetupCommands {
 		if strings.Contains(sc.Cmd, "enable --now nginx") {
 			t.Error("should not enable nginx when dashboard disabled")
@@ -640,7 +640,7 @@ func TestFromConfig_SetupCommands_SystemdReload(t *testing.T) {
 	cfg := &config.Config{
 		Agents: []config.AgentConfig{{Name: "concierge", Tier: "operator", Mode: "on-demand"}},
 	}
-	m := FromConfig(cfg)
+	m := FromConfig(cfg, BootstrapOptions{})
 	hasDaemonReload := false
 	for _, sc := range m.SetupCommands {
 		if strings.Contains(sc.Cmd, "daemon-reload") {
@@ -657,7 +657,7 @@ func TestFromConfig_SetupCommands_UnitEnable(t *testing.T) {
 		Agents:    []config.AgentConfig{{Name: "concierge", Tier: "operator", Mode: "on-demand"}},
 		Contracts: config.ContractsConfig{System: config.SystemContracts{HealthcheckInterval: "60s"}},
 	}
-	m := FromConfig(cfg)
+	m := FromConfig(cfg, BootstrapOptions{})
 	hasPathEnable := false
 	hasHCEnable := false
 	for _, sc := range m.SetupCommands {
@@ -680,7 +680,7 @@ func TestFromConfig_SetupCommands_SkillDeploy(t *testing.T) {
 	cfg := &config.Config{
 		Agents: []config.AgentConfig{{Name: "concierge", Tier: "operator", Mode: "on-demand", Roles: []string{"router"}}},
 	}
-	m := FromConfig(cfg)
+	m := FromConfig(cfg, BootstrapOptions{})
 	hasSkills := false
 	for _, sc := range m.SetupCommands {
 		if strings.Contains(sc.Cmd, "workspace/skills") {
@@ -696,7 +696,7 @@ func TestFromConfig_SetupCommands_ContinuousMode(t *testing.T) {
 	cfg := &config.Config{
 		Agents: []config.AgentConfig{{Name: "worker", Tier: "worker", Mode: "continuous"}},
 	}
-	m := FromConfig(cfg)
+	m := FromConfig(cfg, BootstrapOptions{})
 	hasSvcEnable := false
 	for _, sc := range m.SetupCommands {
 		if strings.Contains(sc.Cmd, "conos-worker.service") && strings.Contains(sc.Cmd, "enable") {
@@ -712,7 +712,7 @@ func TestFromConfig_SetupCommands_CronMode(t *testing.T) {
 	cfg := &config.Config{
 		Agents: []config.AgentConfig{{Name: "reporter", Tier: "worker", Mode: "cron"}},
 	}
-	m := FromConfig(cfg)
+	m := FromConfig(cfg, BootstrapOptions{})
 	hasTimerEnable := false
 	for _, sc := range m.SetupCommands {
 		if strings.Contains(sc.Cmd, "conos-reporter.timer") && strings.Contains(sc.Cmd, "enable") {
@@ -728,7 +728,7 @@ func TestFromConfig_SetupCommands_OuterInboxEnable(t *testing.T) {
 	cfg := &config.Config{
 		Agents: []config.AgentConfig{{Name: "concierge", Tier: "operator", Mode: "on-demand"}},
 	}
-	m := FromConfig(cfg)
+	m := FromConfig(cfg, BootstrapOptions{})
 	hasOuterInbox := false
 	for _, sc := range m.SetupCommands {
 		if strings.Contains(sc.Cmd, "conos-outer-inbox.path") && strings.Contains(sc.Cmd, "enable") {
@@ -749,7 +749,7 @@ func TestManifestYAMLRoundtrip(t *testing.T) {
 			System: config.SystemContracts{HealthcheckInterval: "60s"},
 		},
 	}
-	m := FromConfig(cfg)
+	m := FromConfig(cfg, BootstrapOptions{})
 
 	data, err := yaml.Marshal(m)
 	if err != nil {
@@ -782,4 +782,113 @@ func TestManifestYAMLRoundtrip(t *testing.T) {
 	if len(m2.SetupCommands) != len(m.SetupCommands) {
 		t.Errorf("setup_commands: expected %d, got %d", len(m.SetupCommands), len(m2.SetupCommands))
 	}
+}
+
+// --- Sidecar mode tests ---
+
+func sidecarTestConfig() *config.Config {
+	return &config.Config{
+		Network: config.NetworkConfig{OutboundFilter: "strict"},
+		Agents: []config.AgentConfig{
+			{Name: "concierge", Tier: "operator", Mode: "on-demand", AllowedPorts: []int{443}, Packages: []string{"curl", "jq"}},
+		},
+		Contracts: config.ContractsConfig{
+			System: config.SystemContracts{HealthcheckInterval: "60s"},
+		},
+	}
+}
+
+func TestFromConfig_Container_NftablesOwnsFile(t *testing.T) {
+	m := FromConfig(sidecarTestConfig(), BootstrapOptions{})
+	for _, sc := range m.SetupCommands {
+		if strings.Contains(sc.Cmd, "cat > /etc/nftables.conf") {
+			return // found
+		}
+	}
+	t.Error("container mode should write to /etc/nftables.conf")
+}
+
+func TestFromConfig_Sidecar_NftablesAdditive(t *testing.T) {
+	m := FromConfig(sidecarTestConfig(), BootstrapOptions{Mode: ModeSidecar})
+	for _, sc := range m.SetupCommands {
+		if strings.Contains(sc.Cmd, "cat > /etc/nftables.conf") {
+			t.Error("sidecar mode should not overwrite /etc/nftables.conf")
+		}
+	}
+	found := false
+	for _, sc := range m.SetupCommands {
+		if strings.Contains(sc.Cmd, "/etc/conos/nftables.conf") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("sidecar mode should write nftables rules to /etc/conos/nftables.conf")
+	}
+}
+
+func TestFromConfig_Container_HasImmutableBits(t *testing.T) {
+	m := FromConfig(sidecarTestConfig(), BootstrapOptions{})
+	for _, sc := range m.SetupCommands {
+		if strings.Contains(sc.Cmd, "chattr +i") {
+			return // found
+		}
+	}
+	t.Error("container mode should set immutable bits")
+}
+
+func TestFromConfig_Sidecar_SkipsImmutableBits(t *testing.T) {
+	m := FromConfig(sidecarTestConfig(), BootstrapOptions{Mode: ModeSidecar})
+	for _, sc := range m.SetupCommands {
+		if strings.Contains(sc.Cmd, "chattr +i") {
+			t.Errorf("sidecar mode should not set immutable bits, found: %s", sc.Description)
+		}
+	}
+}
+
+func TestFromConfig_Container_AptInstall(t *testing.T) {
+	m := FromConfig(sidecarTestConfig(), BootstrapOptions{})
+	for _, sc := range m.SetupCommands {
+		if strings.Contains(sc.Cmd, "apt-get install") {
+			return // found
+		}
+	}
+	t.Error("container mode should run apt-get install")
+}
+
+func TestFromConfig_Sidecar_AptWarning(t *testing.T) {
+	m := FromConfig(sidecarTestConfig(), BootstrapOptions{Mode: ModeSidecar})
+	for _, sc := range m.SetupCommands {
+		if strings.Contains(sc.Cmd, "apt-get install") {
+			t.Error("sidecar mode should not run apt-get install")
+		}
+	}
+	found := false
+	for _, sc := range m.SetupCommands {
+		if strings.Contains(sc.Cmd, "sidecar: install these packages manually") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("sidecar mode should emit package warning")
+	}
+}
+
+func TestFromConfig_Container_SudoersWarn(t *testing.T) {
+	m := FromConfig(sidecarTestConfig(), BootstrapOptions{})
+	for _, sc := range m.SetupCommands {
+		if strings.Contains(sc.Cmd, "visudo -c || echo") {
+			return // found
+		}
+	}
+	t.Error("container mode should warn on sudoers validation failure")
+}
+
+func TestFromConfig_Sidecar_SudoersHardFail(t *testing.T) {
+	m := FromConfig(sidecarTestConfig(), BootstrapOptions{Mode: ModeSidecar})
+	for _, sc := range m.SetupCommands {
+		if strings.Contains(sc.Cmd, "visudo -c || exit 1") {
+			return // found
+		}
+	}
+	t.Error("sidecar mode should hard-fail on sudoers validation")
 }

@@ -241,7 +241,7 @@ func runDoctor() {
 
 	// Manifest verification
 	cfg := loadConfig()
-	m := bootstrap.FromConfig(cfg)
+	m := bootstrap.FromConfig(cfg, bootstrap.BootstrapOptions{})
 	findings := bootstrap.VerifyLocal(m)
 	manifestFails := 0
 	for _, f := range findings {
@@ -286,7 +286,7 @@ func runManifest(args []string) {
 		os.Exit(1)
 	}
 	cfg := loadConfig()
-	m := bootstrap.FromConfig(cfg)
+	m := bootstrap.FromConfig(cfg, bootstrap.BootstrapOptions{})
 	data, err := yaml.Marshal(m)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "manifest: %v\n", err)

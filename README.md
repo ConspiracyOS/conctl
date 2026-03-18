@@ -10,6 +10,11 @@ Linux users (`a-<name>`), `/srv/conos/` directory tree, POSIX ACLs,
 sudoers rules, and systemd path/service/timer units per agent.
 Bootstrap is idempotent — safe to re-run after config changes.
 
+`conctl bootstrap --sidecar` runs in sidecar mode for installing on an
+existing Linux machine. Sidecar mode writes nftables rules additively
+(won't destroy existing firewall), skips immutable bits, lists required
+packages instead of installing them, and hard-fails on sudoers errors.
+
 All other subcommands are invoked by systemd units, not humans:
 
 | Command | Triggered by |

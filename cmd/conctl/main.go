@@ -20,7 +20,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "usage: conctl <command> [args]")
 		fmt.Fprintln(os.Stderr, "")
 		fmt.Fprintln(os.Stderr, "Commands:")
-		fmt.Fprintln(os.Stderr, "  bootstrap                         Provision the conspiracy")
+		fmt.Fprintln(os.Stderr, "  bootstrap [--sidecar]              Provision the conspiracy")
 		fmt.Fprintln(os.Stderr, "  run <agent>                       Run an agent task cycle")
 		fmt.Fprintln(os.Stderr, "  route-inbox                       Move outer inbox to concierge")
 		fmt.Fprintln(os.Stderr, "  healthcheck                       Evaluate contracts")

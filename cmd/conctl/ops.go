@@ -23,8 +23,16 @@ type logOpts struct {
 }
 
 func runBootstrap() {
+	fs := flag.NewFlagSet("bootstrap", flag.ExitOnError)
+	sidecar := fs.Bool("sidecar", false, "sidecar mode: coexist with existing OS")
+	fs.Parse(os.Args[2:])
+
 	cfg := loadConfig()
-	m := bootstrap.FromConfig(cfg)
+	opts := bootstrap.BootstrapOptions{}
+	if *sidecar {
+		opts.Mode = bootstrap.ModeSidecar
+	}
+	m := bootstrap.FromConfig(cfg, opts)
 	cmds := bootstrap.ProvisionFromManifest(m)
 	for _, c := range cmds {
 		fmt.Printf("+ %s\n", c)
