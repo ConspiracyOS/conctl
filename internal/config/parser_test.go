@@ -490,7 +490,7 @@ func TestResolvedAgent_DefaultsTierWhenEmpty(t *testing.T) {
 func TestTierConfig_UnknownTier(t *testing.T) {
 	cfg := &Config{}
 	tc := cfg.tierConfig("unknown-tier")
-	if tc != (TierConfig{}) {
+	if !tc.isEmpty() {
 		t.Errorf("expected empty TierConfig for unknown tier, got %+v", tc)
 	}
 }

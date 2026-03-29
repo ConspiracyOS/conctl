@@ -23,14 +23,26 @@ func GenerateNftRules(cfg *config.Config) string {
 
 	var b strings.Builder
 
+	// Flush existing rules on reload to prevent stacking (mono#22).
+	// "flush table" only works if the table exists, so we create-then-flush
+	// which is idempotent: first run creates empty table and flushes it,
+	// subsequent runs flush existing rules before re-adding.
+	b.WriteString("table inet conos {}\n")
+	b.WriteString("delete table inet conos\n")
 	b.WriteString("table inet conos {\n")
 
 	// Per-agent allowlist rules
 	var agentRules []string
 	for _, a := range cfg.Agents {
 		user := "a-" + a.Name
+		// DNS scoped to local resolver only — external DNS tunneling is blocked.
+		agentRules = append(agentRules,
+			fmt.Sprintf("        meta skuid \"%s\" udp dport 53 ip daddr 127.0.0.53 accept", user),
+			fmt.Sprintf("        meta skuid \"%s\" udp dport 53 drop", user),
+			fmt.Sprintf("        meta skuid \"%s\" tcp dport 53 ip daddr 127.0.0.53 accept", user),
+			fmt.Sprintf("        meta skuid \"%s\" tcp dport 53 drop", user))
 		if len(a.AllowedPorts) == 0 {
-			// No ports allowed — agent is network-isolated
+			// No additional ports allowed — agent still needs DNS to resolve approved destinations.
 			continue
 		}
 		ports := formatPorts(a.AllowedPorts)

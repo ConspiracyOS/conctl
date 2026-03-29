@@ -38,11 +38,12 @@ type InfraConfig struct {
 // Tier sub-sections override base values for agents of that tier.
 // Resolution: agent > base.<tier> > base.
 type BaseConfig struct {
-	Runner    string `toml:"runner"`
-	Provider  string `toml:"provider"`
-	Model     string `toml:"model"`
-	APIKeyEnv string `toml:"api_key_env"`
-	APIBase   string `toml:"api_base"` // override provider endpoint (e.g. http://host.docker.internal:11434/v1 for Ollama)
+	Runner     string   `toml:"runner"`
+	RunnerArgs []string `toml:"runner_args"`
+	Provider   string   `toml:"provider"`
+	Model      string   `toml:"model"`
+	APIKeyEnv  string   `toml:"api_key_env"`
+	APIBase    string   `toml:"api_base"` // override provider endpoint (e.g. http://host.docker.internal:11434/v1 for Ollama)
 
 	Officer TierConfig `toml:"officer"`
 	Worker  TierConfig `toml:"worker"`
@@ -54,11 +55,16 @@ type BaseConfig struct {
 // TierConfig overrides base values for a specific tier.
 // Empty fields fall through to BaseConfig.
 type TierConfig struct {
-	Runner    string `toml:"runner"`
-	Provider  string `toml:"provider"`
-	Model     string `toml:"model"`
-	APIKeyEnv string `toml:"api_key_env"`
-	APIBase   string `toml:"api_base"`
+	Runner     string   `toml:"runner"`
+	RunnerArgs []string `toml:"runner_args"`
+	Provider   string   `toml:"provider"`
+	Model      string   `toml:"model"`
+	APIKeyEnv  string   `toml:"api_key_env"`
+	APIBase    string   `toml:"api_base"`
+}
+
+func (tc TierConfig) isEmpty() bool {
+	return tc.Runner == "" && len(tc.RunnerArgs) == 0 && tc.Provider == "" && tc.Model == "" && tc.APIKeyEnv == "" && tc.APIBase == ""
 }
 
 type NetworkConfig struct {
@@ -87,24 +93,28 @@ type DashboardConfig struct {
 }
 
 type AgentConfig struct {
-	Name         string   `toml:"name"`
-	Tier         string   `toml:"tier"`
-	Roles        []string `toml:"roles"`
-	Groups       []string `toml:"groups"`
-	Scopes       []string `toml:"scopes"`
-	Mode         string   `toml:"mode"`
-	Cron         string   `toml:"cron"`
-	Runner       string   `toml:"runner"`
-	RunnerArgs   []string `toml:"runner_args"`
-	Environment  []string `toml:"environment"`
-	Provider     string   `toml:"provider"`
-	Model        string   `toml:"model"`
-	APIKeyEnv    string   `toml:"api_key_env"`
-	APIBase      string   `toml:"api_base"`
-	MaxSessions  int      `toml:"max_sessions"`
-	Instructions string   `toml:"instructions"`
-	Packages     []string `toml:"packages"`      // apt packages to install for this agent
-	AllowedPorts []int    `toml:"allowed_ports"` // outbound TCP ports (nftables allowlist, empty = deny all)
+	Name            string   `toml:"name"`
+	Tier            string   `toml:"tier"`
+	Roles           []string `toml:"roles"`
+	Groups          []string `toml:"groups"`
+	Scopes          []string `toml:"scopes"`
+	Mode            string   `toml:"mode"`
+	Cron            string   `toml:"cron"`
+	Runner          string   `toml:"runner"`
+	RunnerArgs      []string `toml:"runner_args"`
+	SessionStrategy string   `toml:"session_strategy"`
+	Environment     []string `toml:"environment"`
+	Provider        string   `toml:"provider"`
+	Model           string   `toml:"model"`
+	APIKeyEnv       string   `toml:"api_key_env"`
+	APIBase         string   `toml:"api_base"`
+	MaxSessions     int      `toml:"max_sessions"`
+	RecentTurns     int      `toml:"recent_turns"`
+	BriefMaxBytes   int      `toml:"brief_max_bytes"`
+	Instructions    string   `toml:"instructions"`
+	Packages        []string `toml:"packages"`        // apt packages to install for this agent
+	AllowedPorts    []int    `toml:"allowed_ports"`   // outbound TCP ports (nftables allowlist, empty = deny all)
+	RunnerSettings  string   `toml:"runner_settings"` // path to runner settings file (e.g. Claude --settings)
 }
 
 // ResolvedAgent returns an AgentConfig with base and tier defaults applied.
@@ -132,6 +142,13 @@ func (c *Config) ResolvedAgent(name string) AgentConfig {
 			}
 			if resolved.APIBase == "" {
 				resolved.APIBase = strutil.FirstNonEmpty(tier.APIBase, c.Base.APIBase)
+			}
+			if len(resolved.RunnerArgs) == 0 {
+				if len(tier.RunnerArgs) > 0 {
+					resolved.RunnerArgs = tier.RunnerArgs
+				} else if len(c.Base.RunnerArgs) > 0 {
+					resolved.RunnerArgs = c.Base.RunnerArgs
+				}
 			}
 
 			// Claude Code OAuth tokens only work with the Claude Code CLI.
@@ -164,6 +181,24 @@ func (c *Config) ResolvedAgent(name string) AgentConfig {
 			}
 			if resolved.Tier == "" {
 				resolved.Tier = "worker"
+			}
+			if resolved.SessionStrategy == "" {
+				switch {
+				case resolved.Runner == "" || resolved.Runner == "picoclaw":
+					resolved.SessionStrategy = "windowed"
+				case strings.Contains(strings.ToLower(resolved.Runner), "claude"):
+					resolved.SessionStrategy = "stateless"
+				case strings.Contains(strings.ToLower(resolved.Runner), "codex"):
+					resolved.SessionStrategy = "stateless"
+				default:
+					resolved.SessionStrategy = "sticky"
+				}
+			}
+			if resolved.RecentTurns == 0 {
+				resolved.RecentTurns = 8
+			}
+			if resolved.BriefMaxBytes == 0 {
+				resolved.BriefMaxBytes = 16 * 1024
 			}
 
 			return resolved

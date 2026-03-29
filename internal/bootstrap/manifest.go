@@ -10,11 +10,11 @@ import (
 // Manifest describes the expected system state for a ConspiracyOS instance.
 // Generated from Config, consumed by ProvisionFromManifest and Verify.
 type Manifest struct {
-	Groups      []Group       `yaml:"groups"`
-	Users       []User        `yaml:"users"`
-	Directories []Directory   `yaml:"directories"`
-	Files       []File        `yaml:"files"`
-	ACLs        []ACL         `yaml:"acls"`
+	Groups        []Group        `yaml:"groups"`
+	Users         []User         `yaml:"users"`
+	Directories   []Directory    `yaml:"directories"`
+	Files         []File         `yaml:"files"`
+	ACLs          []ACL          `yaml:"acls"`
 	Units         []SystemdUnit  `yaml:"units"`
 	SetupCommands []SetupCommand `yaml:"setup_commands"`
 }
@@ -75,6 +75,59 @@ const (
 // BootstrapOptions configures bootstrap behavior independent of system config.
 type BootstrapOptions struct {
 	Mode BootstrapMode
+}
+
+const defaultArchwayMCPURL = "http://host.docker.internal:8893/mcp"
+
+func isClaudeRunner(name string) bool {
+	runner := strings.ToLower(name)
+	return runner == "claude" || runner == "claude-code"
+}
+
+func requiresClaudeCodeCLI(cfg *config.Config) bool {
+	for _, a := range cfg.Agents {
+		resolved := cfg.ResolvedAgent(a.Name)
+		if isClaudeRunner(resolved.Runner) {
+			return true
+		}
+	}
+	return false
+}
+
+func homeDirForUser(user string) string {
+	if user == "root" {
+		return "/root"
+	}
+	return "/home/" + user
+}
+
+func configureClaudeMCPCommand(user, group string) SetupCommand {
+	settingsPath := homeDirForUser(user) + "/.claude.json"
+	return SetupCommand{
+		Description: fmt.Sprintf("configure Claude MCP for %s", user),
+		Cmd: fmt.Sprintf(`python3 - <<'PY'
+import json
+from pathlib import Path
+
+path = Path(%q)
+data = {}
+if path.exists():
+    try:
+        data = json.loads(path.read_text())
+    except Exception:
+        data = {}
+if not isinstance(data, dict):
+    data = {}
+servers = data.get("mcpServers")
+if not isinstance(servers, dict):
+    servers = {}
+servers["archway"] = {"type": "http", "url": %q}
+data["mcpServers"] = servers
+path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+PY
+chown %s:%s %s
+chmod 600 %s`, settingsPath, defaultArchwayMCPURL, user, group, settingsPath, settingsPath),
+	}
 }
 
 // FromConfig generates a Manifest from the current config.
@@ -240,6 +293,15 @@ EnvironmentFile=-/etc/conos/env
 
 	// Setup commands — imperative steps that don't fit the declarative model.
 
+	// Clear immutable bits from previous bootstrap on top-level config files.
+	// This must happen before any writes to these paths.
+	m.SetupCommands = append(m.SetupCommands,
+		SetupCommand{Description: "clear immutable: conos.toml", Cmd: "chattr -i /etc/conos/conos.toml 2>/dev/null || true"},
+		SetupCommand{Description: "clear immutable: env", Cmd: "chattr -i /etc/conos/env 2>/dev/null || true"},
+		SetupCommand{Description: "clear immutable: signing key", Cmd: "chattr -i /etc/conos/artifact-signing.key 2>/dev/null || true"},
+		SetupCommand{Description: "clear immutable: conctl binary", Cmd: "chattr -i /usr/local/bin/conctl 2>/dev/null || true"},
+	)
+
 	// SSH authorized keys
 	if len(cfg.Infra.SSHAuthorizedKeys) > 0 {
 		m.SetupCommands = append(m.SetupCommands,
@@ -262,19 +324,21 @@ EnvironmentFile=-/etc/conos/env
 		)
 	}
 
-	// Sudoers
+	// Sudoers — clear immutable bits from previous runs before overwriting
 	validateCmd := "visudo -c || echo 'warn: sudoers validation failed'"
 	if opts.Mode == ModeSidecar {
 		validateCmd = "visudo -c || exit 1"
 	}
 	m.SetupCommands = append(m.SetupCommands,
+		SetupCommand{Description: "clear immutable: sudoers", Cmd: "find /etc/sudoers.d -name 'conos-*' -exec chattr -i {} + 2>/dev/null || true"},
 		SetupCommand{Description: "install sudoers", Cmd: "cp /etc/conos/sudoers.d/* /etc/sudoers.d/ 2>/dev/null || true"},
 		SetupCommand{Description: "fix sudoers perms", Cmd: "chmod 440 /etc/sudoers.d/conos-* 2>/dev/null || true"},
 		SetupCommand{Description: "validate sudoers", Cmd: validateCmd},
 	)
 
-	// Copy system contracts
+	// Copy system contracts — clear immutable bits from previous runs
 	m.SetupCommands = append(m.SetupCommands,
+		SetupCommand{Description: "clear immutable: contracts", Cmd: "find /srv/conos/contracts -name '*.yaml' -exec chattr -i {} + 2>/dev/null || true"},
 		SetupCommand{Description: "copy contracts", Cmd: "cp /etc/conos/contracts/*.yaml /srv/conos/contracts/ 2>/dev/null || true"},
 		SetupCommand{Description: "copy contract scripts", Cmd: "cp -r /etc/conos/contracts/scripts/ /srv/conos/contracts/scripts/ 2>/dev/null || true"},
 	)
@@ -297,7 +361,7 @@ chown -R root:agents /srv/conos/.git && chmod -R g+w /srv/conos/.git`,
 	// Signing key generation
 	m.SetupCommands = append(m.SetupCommands, SetupCommand{
 		Description: "generate artifact signing key",
-		Cmd:         "test -f /etc/conos/artifact-signing.key || (umask 077 && head -c 32 /dev/urandom | xxd -p -c 32 > /etc/conos/artifact-signing.key)",
+		Cmd:         "test -f /etc/conos/artifact-signing.key || (umask 077 && od -An -tx1 -N32 /dev/urandom | tr -d ' \\n' > /etc/conos/artifact-signing.key)",
 	})
 
 	// Enable auditd
@@ -410,7 +474,10 @@ fi`,
 	// Systemd reload and unit enablement
 	m.SetupCommands = append(m.SetupCommands,
 		SetupCommand{Description: "reload systemd", Cmd: "systemctl daemon-reload"},
-		SetupCommand{Description: "enable healthcheck timer", Cmd: "systemctl enable --now conos-healthcheck.timer"},
+		// Only enable healthcheck timer if it wasn't explicitly disabled.
+		// On first bootstrap (unit doesn't exist yet), is-enabled returns "not-found"
+		// which is not "disabled", so this will enable it.
+		SetupCommand{Description: "enable healthcheck timer", Cmd: `if [ "$(systemctl is-enabled conos-healthcheck.timer 2>/dev/null)" != "disabled" ]; then systemctl enable --now conos-healthcheck.timer; fi`},
 	)
 	for _, a := range cfg.Agents {
 		switch a.Mode {
@@ -450,6 +517,8 @@ fi`,
 	for _, a := range cfg.Agents {
 		allPkgs = append(allPkgs, a.Packages...)
 	}
+	// Note: Claude Code CLI is installed as a native binary (not via npm)
+	// to avoid Node.js version incompatibilities (mono#17).
 	if len(allPkgs) > 0 {
 		// Deduplicate
 		seen := map[string]bool{}
@@ -472,21 +541,53 @@ fi`,
 			})
 		}
 	}
+	if requiresClaudeCodeCLI(cfg) {
+		if opts.Mode == ModeSidecar {
+			m.SetupCommands = append(m.SetupCommands, SetupCommand{
+				Description: "install Claude Code CLI manually",
+				Cmd:         "echo 'sidecar: install Claude Code CLI: curl -fsSL https://console.anthropic.com/install.sh | sh && cp ~/.claude/local/claude /usr/local/bin/claude && ln -sf /usr/local/bin/claude /usr/local/bin/claude-code'",
+			})
+		} else {
+			// Install native binary — avoids Node.js version issues (mono#17).
+			// The install script places the binary under ~/.claude/local/claude (as root).
+			// We copy it to a system path so agent users can execute it.
+			m.SetupCommands = append(m.SetupCommands,
+				SetupCommand{
+					Description: "install Claude Code CLI (native)",
+					Cmd: `if ! command -v claude >/dev/null 2>&1 || ! claude --version >/dev/null 2>&1; then
+    curl -fsSL https://console.anthropic.com/install.sh | sh
+    cp /root/.claude/local/claude /usr/local/bin/claude
+    chmod 755 /usr/local/bin/claude
+    ln -sf /usr/local/bin/claude /usr/local/bin/claude-code
+fi`,
+				},
+			)
+		}
+
+		m.SetupCommands = append(m.SetupCommands, configureClaudeMCPCommand("root", "root"))
+		for _, a := range cfg.Agents {
+			user := "a-" + a.Name
+			m.SetupCommands = append(m.SetupCommands, configureClaudeMCPCommand(user, "agents"))
+		}
+	}
 
 	// AGENTS.md ownership fix and skill deployment for each agent
 	for _, a := range cfg.Agents {
 		user := "a-" + a.Name
 
 		// AGENTS.md assembly is handled in main.go (needs runner package).
-		// Here we just fix ownership after assembly.
+		// Here we just fix ownership after assembly. Clear immutable first for reruns.
 		m.SetupCommands = append(m.SetupCommands, SetupCommand{
+			Description: fmt.Sprintf("clear immutable: AGENTS.md for %s", a.Name),
+			Cmd:         fmt.Sprintf("chattr -i /home/%s/AGENTS.md 2>/dev/null || true", user),
+		}, SetupCommand{
 			Description: fmt.Sprintf("fix AGENTS.md ownership for %s", a.Name),
 			Cmd:         fmt.Sprintf("chown root:root /home/%s/AGENTS.md 2>/dev/null || true && chmod 0444 /home/%s/AGENTS.md 2>/dev/null || true", user, user),
 		})
 
-		// Deploy skills from roles and agent-specific dirs
+		// Deploy skills from roles and agent-specific dirs — clear immutable first for reruns
 		skillsDir := fmt.Sprintf("/srv/conos/agents/%s/workspace/skills", a.Name)
-		cpCmd := fmt.Sprintf("mkdir -p %s", skillsDir)
+		cpCmd := fmt.Sprintf("find /etc/conos/roles -name '*.md' -exec chattr -i {} + 2>/dev/null || true && mkdir -p %s", skillsDir)
 		for _, r := range a.Roles {
 			cpCmd += fmt.Sprintf(" && cp /etc/conos/roles/%s/skills/*.md %s/ 2>/dev/null || true", r, skillsDir)
 		}

@@ -79,6 +79,11 @@ func BuildPicoConfig(agent conconfig.AgentConfig, workspace string) *pcconfig.Co
 		apiKey = os.Getenv(agent.APIKeyEnv)
 	}
 
+	// Generic fallback: if agent's api_key_env didn't resolve, try CONOS_API_KEY.
+	if apiKey == "" {
+		apiKey = os.Getenv("CONOS_API_KEY")
+	}
+
 	switch agent.Provider {
 	case "openrouter":
 		if apiKey == "" {
@@ -106,7 +111,9 @@ func BuildPicoConfig(agent conconfig.AgentConfig, workspace string) *pcconfig.Co
 		cfg.Providers.Ollama = pcconfig.ProviderConfig{APIKey: apiKey, APIBase: base}
 	default:
 		// No provider specified or unknown — try legacy env var cascade
-		if key := os.Getenv("CONOS_OPENROUTER_API_KEY"); key != "" {
+		if apiKey != "" {
+			cfg.Providers.OpenRouter = pcconfig.ProviderConfig{APIKey: apiKey}
+		} else if key := os.Getenv("CONOS_OPENROUTER_API_KEY"); key != "" {
 			cfg.Providers.OpenRouter = pcconfig.ProviderConfig{APIKey: key}
 		} else if key := os.Getenv("CONOS_AUTH_ANTHROPIC"); key != "" {
 			cfg.Providers.Anthropic = pcconfig.ProviderConfig{APIKey: key}

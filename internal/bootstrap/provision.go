@@ -1,6 +1,13 @@
 package bootstrap
 
-import "fmt"
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/ConspiracyOS/conctl/internal/config"
+)
 
 // ProvisionFromManifest generates shell commands from a Manifest.
 // This covers groups, users, directories, files, ACLs, and systemd units.
@@ -14,6 +21,7 @@ func ProvisionFromManifest(m Manifest) []string {
 
 	// Files (pre-user, for things like env and signing key)
 	for _, f := range m.Files {
+		cmds = append(cmds, fmt.Sprintf("chattr -i %s 2>/dev/null || true", f.Path))
 		if f.Content != "" {
 			cmds = append(cmds, fmt.Sprintf("cat > %s << 'EOF'\n%sEOF", f.Path, f.Content))
 		}
@@ -68,12 +76,90 @@ func ProvisionFromManifest(m Manifest) []string {
 	// Systemd units
 	for _, u := range m.Units {
 		path := "/etc/systemd/system/" + u.Name
+		cmds = append(cmds, fmt.Sprintf("chattr -i %s 2>/dev/null || true", path))
 		cmds = append(cmds, fmt.Sprintf("cat > %s << 'UNITEOF'\n%sUNITEOF", path, u.Content))
 	}
 
 	// Setup commands (imperative steps)
 	for _, sc := range m.SetupCommands {
 		cmds = append(cmds, sc.Cmd)
+	}
+
+	return cmds
+}
+
+// PruneCommands generates shell commands to remove agents, users, groups,
+// and systemd units that exist on the system but are not in the current config.
+func PruneCommands(cfg *config.Config) []string {
+	declared := map[string]bool{}
+	for _, a := range cfg.Agents {
+		declared[a.Name] = true
+	}
+
+	var cmds []string
+
+	// Find stale agent state directories
+	agentsDir := "/srv/conos/agents"
+	entries, err := os.ReadDir(agentsDir)
+	if err == nil {
+		for _, e := range entries {
+			if !e.IsDir() || declared[e.Name()] {
+				continue
+			}
+			name := e.Name()
+			user := "a-" + name
+
+			// Stop and disable systemd units
+			for _, suffix := range []string{".path", ".service", ".timer"} {
+				unit := "conos-" + name + suffix
+				cmds = append(cmds, fmt.Sprintf("systemctl disable --now %s 2>/dev/null || true", unit))
+			}
+
+			// Remove unit files
+			unitGlob := filepath.Join("/etc/systemd/system", "conos-"+name+".*")
+			matches, _ := filepath.Glob(unitGlob)
+			for _, m := range matches {
+				cmds = append(cmds, fmt.Sprintf("chattr -i %s 2>/dev/null || true && rm -f %s", m, m))
+			}
+
+			// Remove user (also removes from groups)
+			cmds = append(cmds, fmt.Sprintf("userdel -r %s 2>/dev/null || true", user))
+
+			// Remove task group
+			cmds = append(cmds, fmt.Sprintf("groupdel can-task-%s 2>/dev/null || true", name))
+
+			// Remove state directory
+			cmds = append(cmds, fmt.Sprintf("rm -rf %s", filepath.Join(agentsDir, name)))
+		}
+	}
+
+	// Find stale systemd units that match conos-* but don't belong to any declared agent
+	unitDir := "/etc/systemd/system"
+	unitEntries, err := os.ReadDir(unitDir)
+	if err == nil {
+		for _, e := range unitEntries {
+			n := e.Name()
+			if !strings.HasPrefix(n, "conos-") {
+				continue
+			}
+			// Skip non-agent units
+			base := strings.TrimPrefix(n, "conos-")
+			for _, suffix := range []string{".path", ".service", ".timer"} {
+				base = strings.TrimSuffix(base, suffix)
+			}
+			// Skip system units (healthcheck, outer-inbox, env, bootstrap)
+			if base == "healthcheck" || base == "outer-inbox" || base == "env" || base == "bootstrap" {
+				continue
+			}
+			if !declared[base] {
+				cmds = append(cmds, fmt.Sprintf("systemctl disable --now %s 2>/dev/null || true", n))
+				cmds = append(cmds, fmt.Sprintf("chattr -i %s 2>/dev/null || true && rm -f %s", filepath.Join(unitDir, n), filepath.Join(unitDir, n)))
+			}
+		}
+	}
+
+	if len(cmds) > 0 {
+		cmds = append(cmds, "systemctl daemon-reload")
 	}
 
 	return cmds

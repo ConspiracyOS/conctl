@@ -873,6 +873,94 @@ func TestFromConfig_Sidecar_AptWarning(t *testing.T) {
 	}
 }
 
+func TestFromConfig_Container_InstallsClaudeCLI(t *testing.T) {
+	cfg := &config.Config{
+		Agents: []config.AgentConfig{
+			{Name: "concierge", Tier: "operator", Runner: "claude"},
+		},
+	}
+
+	m := FromConfig(cfg, BootstrapOptions{})
+
+	foundClaudeInstall := false
+	foundClaudeSymlink := false
+	for _, sc := range m.SetupCommands {
+		if strings.Contains(sc.Cmd, "console.anthropic.com/install.sh") {
+			foundClaudeInstall = true
+		}
+		if strings.Contains(sc.Cmd, "/usr/local/bin/claude-code") {
+			foundClaudeSymlink = true
+		}
+	}
+
+	if !foundClaudeInstall {
+		t.Error("container mode should install Claude Code CLI (native) when Claude runner is configured")
+	}
+	if !foundClaudeSymlink {
+		t.Error("container mode should create claude-code symlink")
+	}
+}
+
+func TestFromConfig_Container_ConfiguresArchwayMCPForClaudeUsers(t *testing.T) {
+	cfg := &config.Config{
+		Agents: []config.AgentConfig{
+			{Name: "concierge", Tier: "operator", Runner: "claude"},
+			{Name: "team-1", Tier: "operator", Runner: "claude"},
+		},
+	}
+
+	m := FromConfig(cfg, BootstrapOptions{})
+
+	requiredPaths := map[string]bool{
+		"/root/.claude.json":             false,
+		"/home/a-concierge/.claude.json": false,
+		"/home/a-team-1/.claude.json":    false,
+		defaultArchwayMCPURL:             false,
+	}
+	for _, sc := range m.SetupCommands {
+		if !strings.Contains(sc.Description, "configure Claude MCP") {
+			continue
+		}
+		for needle := range requiredPaths {
+			if strings.Contains(sc.Cmd, needle) {
+				requiredPaths[needle] = true
+			}
+		}
+	}
+
+	for needle, found := range requiredPaths {
+		if !found {
+			t.Errorf("expected Claude MCP setup command to reference %q", needle)
+		}
+	}
+}
+
+func TestFromConfig_Sidecar_WarnsAboutClaudeCLIInstall(t *testing.T) {
+	cfg := &config.Config{
+		Agents: []config.AgentConfig{
+			{Name: "concierge", Tier: "operator", Runner: "claude"},
+		},
+	}
+
+	m := FromConfig(cfg, BootstrapOptions{Mode: ModeSidecar})
+
+	for _, sc := range m.SetupCommands {
+		if strings.Contains(sc.Cmd, "console.anthropic.com/install.sh") && !strings.Contains(sc.Cmd, "sidecar:") {
+			t.Error("sidecar mode should not install Claude Code CLI directly")
+		}
+	}
+
+	found := false
+	for _, sc := range m.SetupCommands {
+		if strings.Contains(sc.Cmd, "sidecar: install Claude Code CLI") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("sidecar mode should emit a Claude Code CLI install warning")
+	}
+}
+
 func TestFromConfig_Container_SudoersWarn(t *testing.T) {
 	m := FromConfig(sidecarTestConfig(), BootstrapOptions{})
 	for _, sc := range m.SetupCommands {

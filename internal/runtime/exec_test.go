@@ -144,3 +144,113 @@ func TestNew_Exec(t *testing.T) {
 		t.Errorf("expected workspace %q, got %q", ws, e.Workspace)
 	}
 }
+
+func TestExecRuntime_ClaudeStatelessArgs(t *testing.T) {
+	rt := &Exec{
+		Cmd:             "claude",
+		Args:            []string{"--resume", "abc123", "-c", "--model", "sonnet", "--print"},
+		SessionStrategy: "stateless",
+	}
+
+	got := rt.commandArgs()
+	if containsArg(got, "--resume") || containsArg(got, "-c") {
+		t.Fatalf("expected session flags stripped, got %v", got)
+	}
+	if !containsArg(got, "--no-session-persistence") {
+		t.Fatalf("expected --no-session-persistence appended, got %v", got)
+	}
+	if !containsArg(got, "--print") {
+		t.Fatalf("expected other args preserved, got %v", got)
+	}
+}
+
+func TestExecRuntime_ClaudeStatelessArgs_StripsInlineSessionFlags(t *testing.T) {
+	rt := &Exec{
+		Cmd:             "/usr/local/bin/claude-code",
+		Args:            []string{"--resume=abc123", "--fork-session", "--session-id", "11111111-1111-1111-1111-111111111111", "--no-session-persistence", "--print"},
+		SessionStrategy: "stateless",
+	}
+
+	got := rt.commandArgs()
+	for _, forbidden := range []string{
+		"--resume=abc123",
+		"--fork-session",
+		"--session-id",
+		"11111111-1111-1111-1111-111111111111",
+	} {
+		if containsArg(got, forbidden) {
+			t.Fatalf("expected %q stripped, got %v", forbidden, got)
+		}
+	}
+	if !containsArg(got, "--no-session-persistence") {
+		t.Fatalf("expected --no-session-persistence preserved, got %v", got)
+	}
+	if countArg(got, "--no-session-persistence") != 1 {
+		t.Fatalf("expected exactly one --no-session-persistence, got %v", got)
+	}
+	if !containsArg(got, "--print") {
+		t.Fatalf("expected non-session args preserved, got %v", got)
+	}
+}
+
+func TestExecRuntime_CommandEnv_PreservesClaudeAuthEnv(t *testing.T) {
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "sk-ant-oat-test-token")
+	rt := &Exec{
+		Cmd:       "claude",
+		APIKeyEnv: "ANTHROPIC_AUTH_TOKEN",
+	}
+
+	env := rt.commandEnv()
+	if !containsEnv(env, "ANTHROPIC_AUTH_TOKEN=sk-ant-oat-test-token") {
+		t.Fatalf("expected Claude auth token preserved for trusted runner, got %v", env)
+	}
+}
+
+func TestExecRuntime_CommandEnv_PreservesSelectedClaudeOAuthEnvOnly(t *testing.T) {
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "wrong-token")
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "oauth-token")
+	rt := &Exec{
+		Cmd:       "claude",
+		APIKeyEnv: "CLAUDE_CODE_OAUTH_TOKEN",
+	}
+
+	env := rt.commandEnv()
+	if !containsEnv(env, "CLAUDE_CODE_OAUTH_TOKEN=oauth-token") {
+		t.Fatalf("expected selected Claude OAuth token preserved, got %v", env)
+	}
+	if containsEnv(env, "ANTHROPIC_AUTH_TOKEN=wrong-token") {
+		t.Fatalf("expected conflicting Claude auth token stripped, got %v", env)
+	}
+}
+
+func TestExecRuntime_CommandEnv_StripsGenericExecAuthEnv(t *testing.T) {
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "sk-ant-oat-test-token")
+	rt := &Exec{
+		Cmd:       "cat",
+		APIKeyEnv: "ANTHROPIC_AUTH_TOKEN",
+	}
+
+	env := rt.commandEnv()
+	if containsEnv(env, "ANTHROPIC_AUTH_TOKEN=sk-ant-oat-test-token") {
+		t.Fatalf("expected generic exec runner to strip auth token, got %v", env)
+	}
+}
+
+func countArg(args []string, want string) int {
+	count := 0
+	for _, arg := range args {
+		if arg == want {
+			count++
+		}
+	}
+	return count
+}
+
+func containsEnv(env []string, want string) bool {
+	for _, entry := range env {
+		if entry == want {
+			return true
+		}
+	}
+	return false
+}

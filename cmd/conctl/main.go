@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/ConspiracyOS/conctl/internal/config"
+	"github.com/ConspiracyOS/conctl/internal/runner"
 )
 
 var (
@@ -20,7 +21,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "usage: conctl <command> [args]")
 		fmt.Fprintln(os.Stderr, "")
 		fmt.Fprintln(os.Stderr, "Commands:")
-		fmt.Fprintln(os.Stderr, "  bootstrap [--sidecar]              Provision the conspiracy")
+		fmt.Fprintln(os.Stderr, "  bootstrap [--sidecar] [--prune]    Provision the conspiracy")
 		fmt.Fprintln(os.Stderr, "  run <agent>                       Run an agent task cycle")
 		fmt.Fprintln(os.Stderr, "  route-inbox                       Move outer inbox to concierge")
 		fmt.Fprintln(os.Stderr, "  healthcheck                       Evaluate contracts")
@@ -28,7 +29,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "  artifact create|show|link|verify  Manage user-facing artifacts")
 		fmt.Fprintln(os.Stderr, "  artifact-auth                     Start nginx auth_request backend")
 		fmt.Fprintln(os.Stderr, "  task-contract open|claim|update|show  Manage contract-backed tasks")
-		fmt.Fprintln(os.Stderr, "  task [--agent <name>] <message>   Drop task into inbox")
+		fmt.Fprintln(os.Stderr, "  task [--agent <name>] [--thread-id <id>] [--from <src>] [--channel <name>] [--transport <name>] <message>")
 		fmt.Fprintln(os.Stderr, "  status                            Show agent status")
 		fmt.Fprintln(os.Stderr, "  logs [-f] [-n N] [agent]          Show/stream audit log")
 		fmt.Fprintln(os.Stderr, "  responses                         Show recent agent responses")
@@ -68,19 +69,33 @@ func main() {
 	case "task":
 		fs := flag.NewFlagSet("task", flag.ExitOnError)
 		agentName := fs.String("agent", "", "send directly to this agent's inbox")
+		threadID := fs.String("thread-id", "", "conversation thread identifier")
+		from := fs.String("from", "", "message sender identifier")
+		channel := fs.String("channel", "", "source channel name")
+		transport := fs.String("transport", "", "transport or driver name")
+		source := fs.String("source", "", "source system identifier")
+		parentRunID := fs.String("parent-run-id", "", "upstream run identifier")
 		fs.Parse(os.Args[2:])
 		if fs.NArg() < 1 {
-			fmt.Fprintln(os.Stderr, "usage: conctl task [--agent <name>] <message>")
+			fmt.Fprintln(os.Stderr, "usage: conctl task [--agent <name>] [--thread-id <id>] [--from <src>] [--channel <name>] [--transport <name>] <message>")
 			os.Exit(1)
 		}
 		message := fs.Arg(0)
+		meta := runner.TaskMetadata{
+			ThreadID:    *threadID,
+			From:        *from,
+			Channel:     *channel,
+			Transport:   *transport,
+			Source:      *source,
+			ParentRunID: *parentRunID,
+		}
 		if *agentName != "" {
-			if err := dropTaskToAgent("/srv/conos/agents", *agentName, message); err != nil {
+			if err := dropTaskToAgent("/srv/conos/agents", *agentName, message, meta); err != nil {
 				fmt.Fprintln(os.Stderr, err)
 				os.Exit(1)
 			}
 		} else {
-			dropTask(message)
+			dropTask(message, meta)
 		}
 	case "status":
 		showStatus()

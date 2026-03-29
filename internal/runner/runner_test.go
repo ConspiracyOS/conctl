@@ -1,14 +1,33 @@
 package runner
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
 	"os"
 	"os/user"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ConspiracyOS/conctl/internal/config"
 )
+
+type captureRuntime struct {
+	prompt     string
+	sessionKey string
+	output     string
+}
+
+func (c *captureRuntime) Invoke(_ context.Context, prompt, sessionKey string) (string, error) {
+	c.prompt = prompt
+	c.sessionKey = sessionKey
+	if c.output == "" {
+		return "thread reply", nil
+	}
+	return c.output, nil
+}
 
 func TestPickOldestTask(t *testing.T) {
 	inbox := t.TempDir()
@@ -27,6 +46,22 @@ func TestPickOldestTask(t *testing.T) {
 	}
 	if task.Content != "first task" {
 		t.Errorf("unexpected content: %q", task.Content)
+	}
+}
+
+func TestPickOldestTask_LoadsMetadata(t *testing.T) {
+	inbox := t.TempDir()
+	meta := TaskMetadata{ThreadID: "thread-123", From: "alice", Channel: "ops", Transport: "openclaw"}
+	if err := WriteNamedTaskWithMetadata(inbox, "001", "first task", meta); err != nil {
+		t.Fatalf("WriteNamedTaskWithMetadata failed: %v", err)
+	}
+
+	task, err := PickOldestTask(inbox)
+	if err != nil {
+		t.Fatalf("PickOldestTask failed: %v", err)
+	}
+	if task.Metadata.ThreadID != meta.ThreadID || task.Metadata.From != meta.From || task.Metadata.Transport != meta.Transport {
+		t.Fatalf("unexpected metadata: %+v", task.Metadata)
 	}
 }
 
@@ -84,6 +119,37 @@ func TestRouteOutput(t *testing.T) {
 	}
 }
 
+func TestRouteOutput_MovesMetadata(t *testing.T) {
+	agentDir := t.TempDir()
+	inbox := filepath.Join(agentDir, "inbox")
+	outbox := filepath.Join(agentDir, "outbox")
+	processed := filepath.Join(agentDir, "processed")
+	if err := os.MkdirAll(inbox, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(outbox, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(processed, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	meta := TaskMetadata{ThreadID: "thread-123", Transport: "openclaw"}
+	if err := WriteNamedTaskWithMetadata(inbox, "001-test", "original task", meta); err != nil {
+		t.Fatalf("WriteNamedTaskWithMetadata failed: %v", err)
+	}
+	task, err := PickOldestTask(inbox)
+	if err != nil {
+		t.Fatalf("PickOldestTask failed: %v", err)
+	}
+	if err := RouteOutput(task, "done", outbox, processed); err != nil {
+		t.Fatalf("RouteOutput failed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(processed, "001-test.task.meta.json")); err != nil {
+		t.Fatalf("expected metadata sidecar moved to processed: %v", err)
+	}
+}
+
 func TestMoveOuterInboxTasks(t *testing.T) {
 	// Patch the outer inbox and concierge inbox to temp dirs using env vars
 	// Since MoveOuterInboxTasks uses hardcoded paths, we test it via a wrapper
@@ -117,6 +183,22 @@ func TestMoveOuterInboxTasks(t *testing.T) {
 	_, err = os.Stat(filepath.Join(outerInbox, "README.txt"))
 	if os.IsNotExist(err) {
 		t.Error("expected non-task file to remain in outer inbox")
+	}
+}
+
+func TestMoveOuterInboxTasks_MovesMetadata(t *testing.T) {
+	outerInbox := t.TempDir()
+	conciergeInbox := t.TempDir()
+	meta := TaskMetadata{ThreadID: "thread-123", Transport: "openclaw"}
+	if err := WriteNamedTaskWithMetadata(outerInbox, "001-test", "task content", meta); err != nil {
+		t.Fatalf("WriteNamedTaskWithMetadata failed: %v", err)
+	}
+
+	if err := moveOuterInboxTasksTo(outerInbox, conciergeInbox); err != nil {
+		t.Fatalf("moveOuterInboxTasksTo failed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(conciergeInbox, "001-test.task.meta.json")); err != nil {
+		t.Fatalf("expected metadata sidecar moved with task: %v", err)
 	}
 }
 
@@ -862,6 +944,152 @@ func TestRun_WithSkills(t *testing.T) {
 	}
 }
 
+func TestRunWithRuntime_UsesThreadContextAndPerThreadSession(t *testing.T) {
+	agentName := "test-runner"
+	stateBase, _, dirs := setupRunDirs(t, agentName)
+	agentDir := filepath.Join(stateBase, "agents", agentName)
+	meta := TaskMetadata{ThreadID: "thread-123", From: "alice", Channel: "ops", Transport: "openclaw"}
+	if err := WriteNamedTaskWithMetadata(filepath.Join(agentDir, "inbox"), "001", "current task", meta); err != nil {
+		t.Fatalf("WriteNamedTaskWithMetadata failed: %v", err)
+	}
+
+	threadDir := filepath.Join(agentDir, "threads", meta.ThreadKey())
+	if err := os.MkdirAll(threadDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(threadDir, "brief.md"), []byte("# Thread Brief\n\nPrevious summary\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	recent := []ThreadTurn{
+		{Role: "user", Content: "Earlier question", At: time.Now().UTC()},
+		{Role: "assistant", Content: "Earlier answer", At: time.Now().UTC()},
+	}
+	var recentLines []string
+	for _, turn := range recent {
+		data, err := json.Marshal(turn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		recentLines = append(recentLines, string(data))
+	}
+	if err := os.WriteFile(filepath.Join(threadDir, "recent.jsonl"), []byte(strings.Join(recentLines, "\n")+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{
+		Agents: []config.AgentConfig{
+			{Name: agentName, Runner: "picoclaw", SessionStrategy: "windowed"},
+		},
+	}
+	rt := &captureRuntime{}
+	if err := RunWithRuntime(agentName, cfg, dirs, rt); err != nil {
+		t.Fatalf("RunWithRuntime failed: %v", err)
+	}
+
+	wantSession := fmt.Sprintf("conos:%s:%s", agentName, meta.ThreadKey())
+	if rt.sessionKey != wantSession {
+		t.Fatalf("session key = %q, want %q", rt.sessionKey, wantSession)
+	}
+	for _, fragment := range []string{"# Conversation Context", "Previous summary", "Earlier question", "current task"} {
+		if !strings.Contains(rt.prompt, fragment) {
+			t.Fatalf("prompt missing %q:\n%s", fragment, rt.prompt)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(threadDir, "runner_state.json")); err != nil {
+		t.Fatalf("expected runner_state.json to be written: %v", err)
+	}
+}
+
+func TestRunWithRuntime_LoadsPolicyAndWritesStructuredAudit(t *testing.T) {
+	agentName := "team-1"
+	stateBase, _, dirs := setupRunDirs(t, agentName)
+	agentDir := filepath.Join(stateBase, "agents", agentName)
+	meta := TaskMetadata{
+		ThreadID:    "thread-123",
+		From:        "alice",
+		Channel:     "ops",
+		Transport:   "openclaw",
+		Source:      "slack",
+		ParentRunID: "run-42",
+	}
+	if err := WriteNamedTaskWithMetadata(filepath.Join(agentDir, "inbox"), "001", "current task", meta); err != nil {
+		t.Fatalf("WriteNamedTaskWithMetadata failed: %v", err)
+	}
+
+	for path, content := range map[string]string{
+		filepath.Join(stateBase, "policy", "global.md"):               "Global rules",
+		filepath.Join(stateBase, "policy", "tiers", "operator.md"):    "Operator rules",
+		filepath.Join(stateBase, "policy", "groups", "tripletex.md"):  "Tripletex rules",
+		filepath.Join(stateBase, "policy", "agents", agentName+".md"): "Agent rules",
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cfg := &config.Config{
+		Agents: []config.AgentConfig{
+			{Name: agentName, Runner: "picoclaw", SessionStrategy: "windowed", Tier: "operator", Groups: []string{"tripletex"}, Model: "sonnet"},
+		},
+	}
+	rt := &captureRuntime{output: "policy reply"}
+	if err := RunWithRuntime(agentName, cfg, dirs, rt); err != nil {
+		t.Fatalf("RunWithRuntime failed: %v", err)
+	}
+
+	for _, fragment := range []string{"# Standing Policy", "Global rules", "Operator rules", "Tripletex rules", "Agent rules"} {
+		if !strings.Contains(rt.prompt, fragment) {
+			t.Fatalf("prompt missing %q:\n%s", fragment, rt.prompt)
+		}
+	}
+
+	date := time.Now().Format("2006-01-02")
+	ledgerData, err := os.ReadFile(filepath.Join(stateBase, "ledger", date+".tsv"))
+	if err != nil {
+		t.Fatalf("read ledger: %v", err)
+	}
+	for _, fragment := range []string{"\topenclaw\t", "\tops\t", "\talice\t", "\tslack\t", "\trun-42\t", "\tthread-123\t"} {
+		if !strings.Contains(string(ledgerData), fragment) {
+			t.Fatalf("ledger missing %q:\n%s", fragment, string(ledgerData))
+		}
+	}
+
+	humanAudit, err := os.ReadFile(filepath.Join(stateBase, "logs", "audit", date+".log"))
+	if err != nil {
+		t.Fatalf("read human audit log: %v", err)
+	}
+	for _, fragment := range []string{"thread:openclaw/ops/alice/thread-123", "source:slack", "parent:run-42", "policy:4"} {
+		if !strings.Contains(string(humanAudit), fragment) {
+			t.Fatalf("audit log missing %q:\n%s", fragment, string(humanAudit))
+		}
+	}
+
+	jsonAudit, err := os.ReadFile(filepath.Join(stateBase, "logs", "audit", date+".jsonl"))
+	if err != nil {
+		t.Fatalf("read json audit log: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(jsonAudit)), "\n")
+	if len(lines) == 0 {
+		t.Fatal("expected at least one audit event")
+	}
+	var event RunAuditEvent
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &event); err != nil {
+		t.Fatalf("unmarshal audit event: %v", err)
+	}
+	if event.Agent != agentName {
+		t.Fatalf("agent = %q, want %q", event.Agent, agentName)
+	}
+	if len(event.PolicyRefs) != 4 {
+		t.Fatalf("policy refs = %v, want 4 refs", event.PolicyRefs)
+	}
+	if event.Metadata == nil || event.Metadata.ThreadID != meta.ThreadID || event.Metadata.Source != meta.Source {
+		t.Fatalf("unexpected metadata: %+v", event.Metadata)
+	}
+}
+
 func TestRun_RuntimeError(t *testing.T) {
 	// Covers the rt.Invoke error path where output is empty.
 	agentName := "test-runner"
@@ -922,6 +1150,104 @@ func TestRun_EmptyInbox(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "no tasks in inbox") {
 		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestExtractOpenItems(t *testing.T) {
+	output := `Here's what I found:
+- TODO: fix the DNS config
+- The server is running fine
+- Next: deploy the new image
+* Blocker: waiting on API key from ops
+- This is just a regular line
+- Need to update the docs`
+
+	items := extractOpenItems(output)
+	if len(items) != 4 {
+		t.Fatalf("expected 4 open items, got %d: %v", len(items), items)
+	}
+	if items[0] != "TODO: fix the DNS config" {
+		t.Errorf("item[0] = %q", items[0])
+	}
+}
+
+func TestExtractOpenItems_Empty(t *testing.T) {
+	items := extractOpenItems("No actionable items here.\nJust regular text.")
+	if len(items) != 0 {
+		t.Errorf("expected 0 items, got %d", len(items))
+	}
+}
+
+func TestPersistThreadContext_BriefUpdatedEveryTurn(t *testing.T) {
+	agentDir := t.TempDir()
+	agentName := "test"
+	agentPath := filepath.Join(agentDir, "agents", agentName)
+	os.MkdirAll(filepath.Join(agentPath, "inbox"), 0755)
+
+	meta := TaskMetadata{ThreadID: "t-1", Transport: "test"}
+	task := Task{Content: "hello", Metadata: meta}
+	now := time.Now()
+
+	// First turn — brief should be created with [latest] marker
+	err := persistThreadContext(agentPath, task, "world", "key-1", "windowed", 8, 4096, now)
+	if err != nil {
+		t.Fatalf("persistThreadContext: %v", err)
+	}
+
+	threadDir := filepath.Join(agentPath, "threads", meta.ThreadKey())
+	briefData, err := os.ReadFile(filepath.Join(threadDir, "brief.md"))
+	if err != nil {
+		t.Fatalf("read brief: %v", err)
+	}
+	brief := string(briefData)
+	if !strings.Contains(brief, "[latest]") {
+		t.Errorf("brief should contain [latest] marker:\n%s", brief)
+	}
+	if strings.Contains(brief, "No prior summarized turns") {
+		t.Errorf("brief should not contain placeholder after first turn:\n%s", brief)
+	}
+
+	// Second turn — [latest] should be replaced, not duplicated
+	err = persistThreadContext(agentPath, task, "updated response", "key-1", "windowed", 8, 4096, now)
+	if err != nil {
+		t.Fatalf("persistThreadContext second turn: %v", err)
+	}
+	briefData, _ = os.ReadFile(filepath.Join(threadDir, "brief.md"))
+	brief = string(briefData)
+	if strings.Count(brief, "[latest]") != 1 {
+		t.Errorf("expected exactly 1 [latest] marker, got %d:\n%s", strings.Count(brief, "[latest]"), brief)
+	}
+	if !strings.Contains(brief, "updated response") {
+		t.Errorf("brief should reflect latest response:\n%s", brief)
+	}
+}
+
+func TestPersistThreadContext_FactsExtracted(t *testing.T) {
+	agentDir := t.TempDir()
+	agentName := "test"
+	agentPath := filepath.Join(agentDir, "agents", agentName)
+	os.MkdirAll(filepath.Join(agentPath, "inbox"), 0755)
+
+	meta := TaskMetadata{ThreadID: "t-2", Transport: "test"}
+	task := Task{Content: "status?", Metadata: meta}
+
+	output := "Done. Remaining:\n- TODO: update nftables\n- Need to restart nginx"
+	err := persistThreadContext(agentPath, task, output, "key-1", "windowed", 8, 4096, time.Now())
+	if err != nil {
+		t.Fatalf("persistThreadContext: %v", err)
+	}
+
+	threadDir := filepath.Join(agentPath, "threads", meta.ThreadKey())
+	factsData, err := os.ReadFile(filepath.Join(threadDir, "facts.json"))
+	if err != nil {
+		t.Fatalf("read facts: %v", err)
+	}
+	var facts ThreadFacts
+	if err := json.Unmarshal(factsData, &facts); err != nil {
+		t.Fatalf("unmarshal facts: %v", err)
+	}
+	if len(facts.OpenItems) != 2 {
+		t.Fatalf("expected 2 open items, got %d: %v", len(facts.OpenItems), facts.OpenItems)
 	}
 }
 

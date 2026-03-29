@@ -21,10 +21,13 @@ func New(agent config.AgentConfig, workspace string) Runtime {
 		return &PicoClaw{Agent: agent, Workspace: workspace}
 	default:
 		return &Exec{
-			Cmd:       agent.Runner,
-			Args:      agent.RunnerArgs,
-			Workspace: workspace,
-			APIKeyEnv: agent.APIKeyEnv,
+			Cmd:             agent.Runner,
+			Args:            agent.RunnerArgs,
+			Workspace:       workspace,
+			APIKeyEnv:       agent.APIKeyEnv,
+			SessionStrategy: agent.SessionStrategy,
+			RunAsUser:       "a-" + agent.Name,
+			SettingsFile:    agent.RunnerSettings,
 		}
 	}
 }

@@ -93,7 +93,7 @@ func TestServiceHardeningSysadmin(t *testing.T) {
 	for _, directive := range []string{
 		"PrivateTmp=yes",
 		"PrivateDevices=yes",
-		"UMask=0077",
+		"UMask=0027",
 	} {
 		if !strings.Contains(svc, directive) {
 			t.Errorf("sysadmin service should still contain %s", directive)
@@ -314,6 +314,55 @@ func TestServiceHardeningSysadminWritePaths(t *testing.T) {
 		if !strings.Contains(svc, path) {
 			t.Errorf("sysadmin service should contain %s", path)
 		}
+	}
+}
+
+func TestServiceHardeningWorkerWithScopes(t *testing.T) {
+	agent := config.AgentConfig{
+		Name:   "dev-worker",
+		Tier:   "worker",
+		Mode:   "on-demand",
+		Scopes: []string{"/srv/conos/scopes/myrepo", "/srv/conos/scopes/docs"},
+	}
+
+	units := GenerateUnits(agent)
+	svc := units["conos-dev-worker.service"]
+
+	// Scopes should be bind-mounted read-write
+	for _, scope := range agent.Scopes {
+		if !strings.Contains(svc, "ReadWritePaths="+scope) {
+			t.Errorf("worker service should contain ReadWritePaths=%s", scope)
+		}
+		if !strings.Contains(svc, "BindPaths="+scope) {
+			t.Errorf("worker service should contain BindPaths=%s", scope)
+		}
+	}
+
+	// Should still have strict hardening
+	if !strings.Contains(svc, "ProtectSystem=strict") {
+		t.Error("scoped worker should still have ProtectSystem=strict")
+	}
+	if !strings.Contains(svc, "NoNewPrivileges=yes") {
+		t.Error("scoped worker should still have NoNewPrivileges=yes")
+	}
+}
+
+func TestServiceHardeningWorkerWithoutScopes(t *testing.T) {
+	agent := config.AgentConfig{
+		Name: "isolated",
+		Tier: "worker",
+		Mode: "on-demand",
+	}
+
+	units := GenerateUnits(agent)
+	svc := units["conos-isolated.service"]
+
+	// No scopes = no ReadWritePaths for worker (only BindReadOnlyPaths)
+	if !strings.Contains(svc, "BindReadOnlyPaths=/srv/conos/agents") {
+		t.Error("worker without scopes should have read-only agents access")
+	}
+	if strings.Contains(svc, "ReadWritePaths=/srv/conos/scopes") {
+		t.Error("worker without scopes should not have scope write paths")
 	}
 }
 

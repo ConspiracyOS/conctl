@@ -48,15 +48,15 @@ func migrateLegacyDefaults(path string, cfg *Config) {
 		}
 		switch tier {
 		case "officer":
-			if cfg.Base.Officer == (TierConfig{}) {
+			if cfg.Base.Officer.isEmpty() {
 				cfg.Base.Officer = tc
 			}
 		case "operator":
-			if cfg.Base.Operator == (TierConfig{}) {
+			if cfg.Base.Operator.isEmpty() {
 				cfg.Base.Operator = tc
 			}
 		case "worker":
-			if cfg.Base.Worker == (TierConfig{}) {
+			if cfg.Base.Worker.isEmpty() {
 				cfg.Base.Worker = tc
 			}
 		}

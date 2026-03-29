@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -79,19 +80,38 @@ func TestDropTaskToAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := dropTaskToAgent(filepath.Join(dir, "agents"), "researcher", "do research"); err != nil {
+	meta := runner.TaskMetadata{ThreadID: "thread-123", From: "alice", Channel: "ops", Transport: "openclaw"}
+	if err := dropTaskToAgent(filepath.Join(dir, "agents"), "researcher", "do research", meta); err != nil {
 		t.Fatal(err)
 	}
 	files, err := os.ReadDir(agentInbox)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(files) != 1 {
-		t.Fatalf("expected 1 task file, got %d", len(files))
+	if len(files) != 2 {
+		t.Fatalf("expected task file and metadata sidecar, got %d entries", len(files))
 	}
-	data, _ := os.ReadFile(filepath.Join(agentInbox, files[0].Name()))
+	var taskFile string
+	for _, file := range files {
+		if strings.HasSuffix(file.Name(), ".task") {
+			taskFile = file.Name()
+			break
+		}
+	}
+	data, _ := os.ReadFile(filepath.Join(agentInbox, taskFile))
 	if string(data) != "do research" {
 		t.Fatalf("unexpected task content: %q", string(data))
+	}
+	metaBytes, err := os.ReadFile(filepath.Join(agentInbox, taskFile+".meta.json"))
+	if err != nil {
+		t.Fatalf("expected metadata sidecar: %v", err)
+	}
+	var saved runner.TaskMetadata
+	if err := json.Unmarshal(metaBytes, &saved); err != nil {
+		t.Fatalf("unmarshal metadata: %v", err)
+	}
+	if saved.ThreadID != "thread-123" || saved.From != "alice" || saved.Transport != "openclaw" {
+		t.Fatalf("unexpected metadata: %+v", saved)
 	}
 }
 
@@ -104,7 +124,7 @@ func TestKillAgent_NoUnits(t *testing.T) {
 
 func TestDropTaskTo_Success(t *testing.T) {
 	inbox := t.TempDir()
-	if err := dropTaskTo(inbox, "hello world"); err != nil {
+	if err := dropTaskTo(inbox, "hello world", runner.TaskMetadata{}); err != nil {
 		t.Fatalf("dropTaskTo failed: %v", err)
 	}
 	entries, _ := os.ReadDir(inbox)
@@ -128,7 +148,7 @@ func TestDropTaskTo_Error(t *testing.T) {
 	os.Chmod(inbox, 0555)
 	defer os.Chmod(inbox, 0755)
 
-	if err := dropTaskTo(inbox, "test"); err == nil {
+	if err := dropTaskTo(inbox, "test", runner.TaskMetadata{}); err == nil {
 		t.Error("expected error writing to read-only inbox")
 	}
 }

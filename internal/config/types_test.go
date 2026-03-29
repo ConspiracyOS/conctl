@@ -138,6 +138,29 @@ func TestResolvedAgent_OAuthByTokenPrefix_InheritedFromBase(t *testing.T) {
 	}
 }
 
+func TestResolvedAgent_ClaudeDefaultsToStatelessThreadedContext(t *testing.T) {
+	cfg := &Config{
+		Agents: []AgentConfig{
+			{
+				Name:   "claude-agent",
+				Runner: "claude-code",
+			},
+		},
+	}
+
+	got := cfg.ResolvedAgent("claude-agent")
+
+	if got.SessionStrategy != "stateless" {
+		t.Errorf("SessionStrategy = %q, want %q", got.SessionStrategy, "stateless")
+	}
+	if got.RecentTurns != 8 {
+		t.Errorf("RecentTurns = %d, want %d", got.RecentTurns, 8)
+	}
+	if got.BriefMaxBytes != 16*1024 {
+		t.Errorf("BriefMaxBytes = %d, want %d", got.BriefMaxBytes, 16*1024)
+	}
+}
+
 func TestResolvedAgent_MultipleAgents_ResolvesCorrectOne(t *testing.T) {
 	cfg := &Config{
 		Base: BaseConfig{
@@ -267,6 +290,57 @@ func TestResolvedAgent_PreservesNonInheritedFields(t *testing.T) {
 	}
 	if len(got.Environment) != 1 || got.Environment[0] != "FOO=bar" {
 		t.Errorf("Environment = %v, want [FOO=bar]", got.Environment)
+	}
+}
+
+func TestResolvedAgent_RunnerArgsInheritedFromBase(t *testing.T) {
+	cfg := &Config{
+		Base: BaseConfig{
+			Runner:     "claude",
+			RunnerArgs: []string{"--print", "--allowedTools", "Bash"},
+		},
+		Agents: []AgentConfig{
+			{Name: "concierge"},
+		},
+	}
+	got := cfg.ResolvedAgent("concierge")
+	if len(got.RunnerArgs) != 3 || got.RunnerArgs[0] != "--print" {
+		t.Errorf("RunnerArgs = %v, want [--print --allowedTools Bash]", got.RunnerArgs)
+	}
+}
+
+func TestResolvedAgent_RunnerArgsTierOverridesBase(t *testing.T) {
+	cfg := &Config{
+		Base: BaseConfig{
+			Runner:     "claude",
+			RunnerArgs: []string{"--print"},
+			Operator: TierConfig{
+				RunnerArgs: []string{"--print", "--verbose"},
+			},
+		},
+		Agents: []AgentConfig{
+			{Name: "concierge", Tier: "operator"},
+		},
+	}
+	got := cfg.ResolvedAgent("concierge")
+	if len(got.RunnerArgs) != 2 || got.RunnerArgs[1] != "--verbose" {
+		t.Errorf("RunnerArgs = %v, want [--print --verbose]", got.RunnerArgs)
+	}
+}
+
+func TestResolvedAgent_RunnerArgsAgentOverridesAll(t *testing.T) {
+	cfg := &Config{
+		Base: BaseConfig{
+			Runner:     "claude",
+			RunnerArgs: []string{"--print"},
+		},
+		Agents: []AgentConfig{
+			{Name: "concierge", RunnerArgs: []string{"--custom"}},
+		},
+	}
+	got := cfg.ResolvedAgent("concierge")
+	if len(got.RunnerArgs) != 1 || got.RunnerArgs[0] != "--custom" {
+		t.Errorf("RunnerArgs = %v, want [--custom]", got.RunnerArgs)
 	}
 }
 

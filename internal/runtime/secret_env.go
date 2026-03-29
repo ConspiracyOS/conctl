@@ -8,6 +8,7 @@ import (
 // knownSecretVars lists env var names that must not be visible to agent
 // subprocesses or leaked into the LLM prompt via tool output.
 var knownSecretVars = []string{
+	"CONOS_API_KEY",
 	"CONOS_OPENROUTER_API_KEY",
 	"CONOS_AUTH_ANTHROPIC",
 	"CONOS_AUTH_OPENAI",

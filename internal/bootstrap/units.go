@@ -68,6 +68,12 @@ func hasSudo(agent config.AgentConfig) bool {
 // Inter-agent access control is handled by POSIX ACLs, not systemd namespacing.
 func serviceHardening(agent config.AgentConfig) string {
 	user := "a-" + agent.Name
+	// Officers/operators use UMask=0027 so files they create (task routing,
+	// audit entries) are group-readable by target agents. Workers keep 0077.
+	umask := "0077"
+	if agent.Tier != "worker" {
+		umask = "0027"
+	}
 	base := fmt.Sprintf(`PrivateTmp=yes
 PrivateDevices=yes
 ProtectKernelTunables=yes
@@ -75,8 +81,8 @@ ProtectControlGroups=yes
 ProtectHome=tmpfs
 BindPaths=/home/%s
 BindPaths=/srv/conos/agents/%s
-UMask=0077
-`, user, agent.Name)
+UMask=%s
+`, user, agent.Name, umask)
 
 	// Syscall filter: @system-service is the systemd-recommended baseline for
 	// normal services. We deny groups that agents should never need: kernel
@@ -105,8 +111,13 @@ ReadWritePaths=/etc/systemd/system
 		// it does NOT prevent reads. Read access is controlled by POSIX
 		// permissions (e.g. /etc/conos/env is mode 600 root:root).
 		// Workers cannot task other agents — all routing goes through concierge.
-		base += `BindReadOnlyPaths=/srv/conos/agents
-NoNewPrivileges=yes
+		// Scopes are bind-mounted read-write for coding tasks.
+		workerPaths := "BindReadOnlyPaths=/srv/conos/agents\n"
+		for _, scope := range agent.Scopes {
+			workerPaths += fmt.Sprintf("ReadWritePaths=%s\n", scope)
+			workerPaths += fmt.Sprintf("BindPaths=%s\n", scope)
+		}
+		base += workerPaths + `NoNewPrivileges=yes
 ProtectSystem=strict
 ` + syscallFilter
 	} else {

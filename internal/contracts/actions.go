@@ -51,7 +51,7 @@ func DispatchAction(ctx context.Context, action FailAction, scope string, execut
 			return cmds, fmt.Errorf("quarantine acl: %w", err)
 		}
 
-	case "alert":
+	case "fail", "warn", "alert":
 		// No OS action — log only
 
 	case "escalate":
@@ -74,13 +74,36 @@ func DispatchAction(ctx context.Context, action FailAction, scope string, execut
 }
 
 // Escalate writes a .task file to the target agent's inbox.
+// Deduplication: if the inbox already has a healthcheck task with the same
+// message content, skip creating another (prevents accumulation when the
+// agent is broken and can't process tasks).
 func Escalate(agentName string, message string) error {
 	if !validAgentName.MatchString(agentName) {
 		return fmt.Errorf("escalate: invalid agent name %q", agentName)
 	}
+	inboxDir := fmt.Sprintf("/srv/conos/agents/%s/inbox", agentName)
+
+	// Check for duplicate: scan existing healthcheck tasks in inbox
+	entries, _ := os.ReadDir(inboxDir)
+	pending := 0
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), "-healthcheck.task") {
+			continue
+		}
+		pending++
+		data, err := os.ReadFile(fmt.Sprintf("%s/%s", inboxDir, e.Name()))
+		if err == nil && strings.TrimSpace(string(data)) == strings.TrimSpace(message) {
+			return nil // identical alert already pending
+		}
+	}
+	// Cap: don't add more than 10 healthcheck tasks
+	if pending >= 10 {
+		return nil
+	}
+
 	ts := time.Now().Format("20060102-150405")
-	taskPath := fmt.Sprintf("/srv/conos/agents/%s/inbox/%s-healthcheck.task", agentName, ts)
-	return os.WriteFile(taskPath, []byte(message), 0644)
+	taskPath := fmt.Sprintf("%s/%s-healthcheck.task", inboxDir, ts)
+	return os.WriteFile(taskPath, []byte(message), 0660)
 }
 
 // parseAgentFromScope extracts agent name from "agent:<name>" scope.

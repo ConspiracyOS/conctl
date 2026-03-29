@@ -107,6 +107,7 @@ func healthcheckInWithOptions(contractsDir, logPath, briefOutput string, opts co
 	for _, c := range allContracts {
 		contractIndex[c.ID] = c
 	}
+	var escalatedChecks []string // track checks that already escalated (avoid duplicate meta-escalation)
 	for _, cr := range result.Results {
 		if cr.Status == "pass" || cr.Status == "skip" || cr.Status == "exempt" {
 			continue
@@ -118,13 +119,17 @@ func healthcheckInWithOptions(contractsDir, logPath, briefOutput string, opts co
 		for _, ch := range c.Checks {
 			if ch.Name == cr.CheckName {
 				cmds, err := contracts.DispatchAction(ctx, contracts.FailAction{
-					Action: string(ch.OnFail),
+					Action:  string(ch.OnFail),
+					Message: fmt.Sprintf("[%s/%s] %s", c.ID, ch.Name, ch.What),
 				}, "global", &contracts.DefaultExecutor{})
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "healthcheck: action dispatch for %s: %v\n", c.ID, err)
 				}
 				for _, cmd := range cmds {
 					fmt.Printf("  ACTION: %s\n", cmd)
+				}
+				if string(ch.OnFail) == "escalate" {
+					escalatedChecks = append(escalatedChecks, fmt.Sprintf("%s/%s", cr.ContractID, cr.CheckName))
 				}
 			}
 		}
@@ -146,17 +151,29 @@ func healthcheckInWithOptions(contractsDir, logPath, briefOutput string, opts co
 		fmt.Printf("  TASK-COMPLETE: %s\n", id)
 	}
 
-	// Meta-escalation: if any contracts failed, send one summary task to sysadmin
+	// Meta-escalation: send summary for non-escalate failures only.
+	// Checks with on_fail=escalate already sent their own per-check tasks
+	// with rich context — including them here would create duplicate tasks
+	// (dedup only matches identical bodies).
 	if result.Failed > 0 {
+		escalatedSet := make(map[string]bool, len(escalatedChecks))
+		for _, key := range escalatedChecks {
+			escalatedSet[key] = true
+		}
 		var failures []string
 		for _, cr := range result.Results {
 			if !cr.Passed {
-				failures = append(failures, fmt.Sprintf("%s/%s", cr.ContractID, cr.CheckName))
+				key := fmt.Sprintf("%s/%s", cr.ContractID, cr.CheckName)
+				if !escalatedSet[key] {
+					failures = append(failures, key)
+				}
 			}
 		}
-		msg := fmt.Sprintf("Healthcheck: %d contract(s) failed: %s. Review audit log and fix.", result.Failed, strings.Join(failures, ", "))
-		if err := contracts.Escalate("sysadmin", msg); err != nil {
-			fmt.Fprintf(os.Stderr, "healthcheck: escalation failed: %v\n", err)
+		if len(failures) > 0 {
+			msg := fmt.Sprintf("Healthcheck: %d contract(s) failed: %s. Review audit log and fix.", len(failures), strings.Join(failures, ", "))
+			if err := contracts.Escalate("sysadmin", msg); err != nil {
+				fmt.Fprintf(os.Stderr, "healthcheck: escalation failed: %v\n", err)
+			}
 		}
 		return fmt.Errorf("healthcheck: %d contract(s) failed", result.Failed)
 	}

@@ -25,6 +25,7 @@ type logOpts struct {
 func runBootstrap() {
 	fs := flag.NewFlagSet("bootstrap", flag.ExitOnError)
 	sidecar := fs.Bool("sidecar", false, "sidecar mode: coexist with existing OS")
+	prune := fs.Bool("prune", false, "remove agents/units not in current config")
 	fs.Parse(os.Args[2:])
 
 	cfg := loadConfig()
@@ -49,6 +50,19 @@ func runBootstrap() {
 		resolved := cfg.ResolvedAgent(a.Name)
 		if err := runner.AssembleAgentsMD(resolved, runner.DefaultDirs()); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: AGENTS.md assembly for %s: %v\n", a.Name, err)
+		}
+	}
+
+	if *prune {
+		pruneCmds := bootstrap.PruneCommands(cfg)
+		for _, c := range pruneCmds {
+			fmt.Printf("+ [prune] %s\n", c)
+			cmd := exec.Command("sh", "-c", c)
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			if err := cmd.Run(); err != nil {
+				fmt.Fprintf(os.Stderr, "prune command failed: %s: %v\n", c, err)
+			}
 		}
 	}
 
@@ -91,31 +105,43 @@ func runAgentLoop(name string, cfg *config.Config, dirs runner.Dirs) error {
 // dropTask writes a task file to the outer inbox. File ownership determines
 // trust level: run as a member of the "trusted" group (or root) for verified
 // framing. See internal/runner/runner.go isTrustedUID.
-func dropTask(message string) {
-	if err := dropTaskTo("/srv/conos/inbox", message); err != nil {
+func dropTask(message string, meta runner.TaskMetadata) {
+	if err := dropTaskTo("/srv/conos/inbox", message, meta); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to write task: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func dropTaskTo(inbox, message string) error {
-	taskID := fmt.Sprintf("%d", time.Now().UnixMicro())
-	taskPath := filepath.Join(inbox, taskID+".task")
-	if err := os.WriteFile(taskPath, []byte(message), 0644); err != nil {
+func dropTaskTo(inbox, message string, meta runner.TaskMetadata) error {
+	taskID, err := runner.WriteTaskWithMetadata(inbox, message, meta)
+	if err != nil {
 		return err
 	}
 	fmt.Printf("Task %s.task dropped into inbox\n", taskID)
 	return nil
 }
 
-func dropTaskToAgent(agentsDir, agentName, message string) error {
+func dropTaskToAgent(agentsDir, agentName, message string, meta runner.TaskMetadata) error {
 	inbox := filepath.Join(agentsDir, agentName, "inbox")
 	if _, err := os.Stat(inbox); err != nil {
 		return fmt.Errorf("agent %q not found (no inbox at %s)", agentName, inbox)
 	}
-	taskID := fmt.Sprintf("%d", time.Now().UnixMicro())
-	taskPath := filepath.Join(inbox, taskID+".task")
-	return os.WriteFile(taskPath, []byte(message), 0644)
+	// Try direct write to agent inbox first. If permission denied (sidecar mode,
+	// host user not in agents group), fall back to the outer inbox which is
+	// group-writable and routes through concierge.
+	_, err := runner.WriteTaskWithMetadata(inbox, message, meta)
+	if err != nil && os.IsPermission(err) {
+		outerInbox := "/srv/conos/inbox"
+		if _, serr := os.Stat(outerInbox); serr == nil {
+			// Prefix message with routing hint so concierge knows the target
+			routed := fmt.Sprintf("---ROUTE_TO: %s---\n\n%s", agentName, message)
+			_, err = runner.WriteTaskWithMetadata(outerInbox, routed, meta)
+			if err == nil {
+				fmt.Fprintf(os.Stderr, "note: delivered via outer inbox (no direct access to %s inbox)\n", agentName)
+			}
+		}
+	}
+	return err
 }
 
 func showStatus() {
