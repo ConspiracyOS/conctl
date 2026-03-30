@@ -154,13 +154,14 @@ Type=oneshot
 User=%s
 Group=agents
 ExecStart=/usr/local/bin/conctl run %s
+ExecStartPost=+/usr/local/bin/conos-route-response %s
 WorkingDirectory=/srv/conos/agents/%s/workspace
 Environment=HOME=/home/%s
 EnvironmentFile=-/etc/conos/env
 %s%s
 [Install]
 WantedBy=multi-user.target
-`, agent.Name, user, agent.Name, agent.Name, user, agentEnvLines(agent), hardening)
+`, agent.Name, user, agent.Name, agent.Name, agent.Name, user, agentEnvLines(agent), hardening)
 
 	units[svcName+".service"] = svc
 

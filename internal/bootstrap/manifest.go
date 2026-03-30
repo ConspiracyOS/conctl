@@ -201,6 +201,16 @@ func FromConfig(cfg *config.Config, opts BootstrapOptions) Manifest {
 	)
 
 	// ACLs — derived from agent tiers.
+	// Base ACL: agents group gets traverse on agent dirs so group members
+	// (including vegard) can access them. Without this, setfacl's user entries
+	// cause group::--- which blocks all group access via POSIX ACL precedence.
+	for _, a := range cfg.Agents {
+		base := fmt.Sprintf("/srv/conos/agents/%s", a.Name)
+		m.ACLs = append(m.ACLs,
+			ACL{Path: base, Group: "agents", Perms: "rx"},
+		)
+	}
+
 	// Officers and operators can task any agent. Workers cannot task.
 	for _, src := range cfg.Agents {
 		srcUser := "a-" + src.Name
@@ -347,7 +357,7 @@ EnvironmentFile=-/etc/conos/env
 	m.SetupCommands = append(m.SetupCommands, SetupCommand{
 		Description: "git init /srv/conos",
 		Cmd: `git config --system --add safe.directory /srv/conos
-cd /srv/conos && git init && git config user.name 'conos' && git config user.email 'conos@localhost' && cat > .gitignore << 'GITIGNORE'
+cd /srv/conos && git init && git config user.name 'conos' && git config user.email 'conos@localhost' && git config core.sharedRepository group && cat > .gitignore << 'GITIGNORE'
 agents/*/workspace/
 artifacts/
 *.env
@@ -470,6 +480,32 @@ fi`,
 			SetupCommand{Description: "remove nginx site", Cmd: "rm -f /etc/nginx/sites-enabled/conspiracyos"},
 		)
 	}
+
+	// Remove stale systemd units for agents no longer in config.
+	// Build the set of expected unit filenames, then disable+remove any
+	// conos-*.{service,path,timer} files that aren't in the set.
+	expectedUnits := map[string]bool{}
+	for _, u := range m.Units {
+		expectedUnits[u.Name] = true
+	}
+	// Also keep outer-inbox units (not agent-specific)
+	expectedUnits["conos-outer-inbox.path"] = true
+	expectedUnits["conos-outer-inbox.service"] = true
+	var keepList []string
+	for name := range expectedUnits {
+		keepList = append(keepList, name)
+	}
+	m.SetupCommands = append(m.SetupCommands, SetupCommand{
+		Description: "remove stale agent units",
+		Cmd: fmt.Sprintf(`for unit in /etc/systemd/system/conos-*.service /etc/systemd/system/conos-*.path /etc/systemd/system/conos-*.timer; do
+  [ -f "$unit" ] || continue
+  name=$(basename "$unit")
+  case "$name" in %s) continue ;; esac
+  systemctl disable --now "$name" 2>/dev/null || true
+  rm -f "$unit"
+  echo "removed stale unit: $name"
+done`, strings.Join(keepList, "|")),
+	})
 
 	// Systemd reload and unit enablement
 	m.SetupCommands = append(m.SetupCommands,

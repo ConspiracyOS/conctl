@@ -56,7 +56,7 @@ func TestServiceHardeningWorker(t *testing.T) {
 		"PrivateTmp=yes",
 		"PrivateDevices=yes",
 		"ProtectHome=tmpfs",
-		"UMask=0077",
+		"UMask=0027",
 		"SystemCallFilter=@system-service",
 		"SystemCallFilter=~@mount",
 		"SystemCallErrorNumber=EPERM",

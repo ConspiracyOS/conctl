@@ -142,6 +142,7 @@ var validActions = map[string]bool{
 	"halt_workers":      true,
 	"kill_session":      true,
 	"quarantine":        true,
+	"log":               true, // log only, no OS action (alias for alert)
 	"alert":             true,
 	"escalate":          true, // escalate to sysadmin inbox
 	"fail":              true,
